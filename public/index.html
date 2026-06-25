@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AJRM Marine Capture</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>AJRM Marine Capture</h1>
+          <p>Automatic AJRM Marine Logger and snapshot bundling for real sailing review and diagnostics.</p>
+        </div>
+        <button id="refreshButton" type="button">Refresh</button>
+      </header>
+
+      <section id="banner" class="banner">Loading...</section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Recorder</h2>
+          <label class="switch">
+            <input id="enabledToggle" type="checkbox" />
+            <span>Enable automatic voyage recording</span>
+          </label>
+          <dl>
+            <div><dt>State</dt><dd id="stateValue">-</dd></div>
+            <div><dt>Voyage</dt><dd id="voyageValue">-</dd></div>
+            <div><dt>Speed</dt><dd id="speedValue">-</dd></div>
+            <div><dt>Threshold</dt><dd id="thresholdValue">-</dd></div>
+            <div><dt>Mode</dt><dd id="modeValue">-</dd></div>
+            <div><dt>AJRM Marine Logger</dt><dd id="captureValue">-</dd></div>
+            <div><dt>Snapshots</dt><dd id="snapshotValue">-</dd></div>
+            <div><dt>Disk</dt><dd id="diskValue">-</dd></div>
+          </dl>
+          <div class="actions">
+            <button id="startButton" type="button">Start now</button>
+            <button id="stopButton" type="button" class="secondary">Stop now</button>
+          </div>
+          <label class="comment-field">
+            <span>Voyage comment</span>
+            <textarea id="commentInput" rows="4" placeholder="Describe this voyage in plain English: route, weather, odd behaviour, testing notes..."></textarea>
+          </label>
+          <div class="actions">
+            <button id="saveCommentButton" type="button" class="secondary">Save comment</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Latest bundle</h2>
+          <dl>
+            <div><dt>File</dt><dd id="bundleValue">-</dd></div>
+            <div><dt>Index</dt><dd id="indexValue">-</dd></div>
+            <div><dt>Last event</dt><dd id="eventValue">-</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Activity</h2>
+        <ul id="events"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Voyage bundles</h2>
+        <div class="selected-bundle-actions" aria-label="Selected voyage bundle actions">
+          <a id="downloadSelectedBundle" class="download-button disabled" href="#" download aria-disabled="true">Download</a>
+          <button id="deleteSelectedBundle" class="delete-button" type="button" disabled>Delete</button>
+        </div>
+        <p id="selectedBundleInfo" class="selected-bundle-info">Select a voyage bundle.</p>
+        <div id="voyageBundles" class="bundle-list"></div>
+      </section>
+    </main>
+    <div id="downloadPopup" class="modal-backdrop" hidden>
+      <section class="modal-panel" role="status" aria-live="polite" aria-labelledby="downloadPopupTitle">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <h2 id="downloadPopupTitle">Preparing download</h2>
+          <p id="downloadPopupMessage">AJRM Marine Capture is collating logs and compressing the voyage bundle. This may take some time.</p>
+        </div>
+      </section>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

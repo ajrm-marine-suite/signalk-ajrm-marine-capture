@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="AJRM Marine Capture">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2d8cff"/>
+      <stop offset="1" stop-color="#25d0a5"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="26" fill="#07111f"/>
+  <path d="M22 77c16-18 31-18 46 0s30 18 30 0" fill="none" stroke="#9fb3c8" stroke-width="7" stroke-linecap="round"/>
+  <path d="M33 65l27-42 27 42H33z" fill="url(#g)"/>
+  <circle cx="87" cy="31" r="10" fill="#ffcc4d"/>
+  <path d="M46 72h28l-14 19z" fill="#eef6ff"/>
+</svg>
