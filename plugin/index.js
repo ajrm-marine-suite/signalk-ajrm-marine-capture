@@ -20,6 +20,12 @@ const CAPTURE_FILE_MODES = new Set(["portable", "reference"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
 const AJRM_MARINE_GPS_INTEGRITY_STATE_PATH = "plugins.ajrmMarineGpsIntegrity.navigationIntegrity";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
+const PLUGIN_CONFIG_FILE = path.join(
+  os.homedir(),
+  ".signalk",
+  "plugin-config-data",
+  "signalk-ajrm-marine-capture.json",
+);
 
 module.exports = function ajrmMarineCapture(app) {
   const plugin = {};
@@ -262,11 +268,18 @@ module.exports = function ajrmMarineCapture(app) {
       }
     });
 
-    router.post("/settings", (req, res) => {
-      options.enabled = req.body?.enabled === true;
-      addEvent("settings", `Automatic voyage recording ${options.enabled ? "enabled" : "disabled"}`);
-      publishState();
-      res.json({ ok: true, enabled: options.enabled });
+    router.post("/settings", async (req, res) => {
+      const enabled = req.body?.enabled === true;
+      try {
+        await persistPluginConfiguration({ enabled });
+        options.enabled = enabled;
+        addEvent("settings", `Automatic voyage recording ${options.enabled ? "enabled" : "disabled"}`);
+        publishState();
+        res.json({ ok: true, enabled: options.enabled });
+      } catch (error) {
+        logError("settings save failed", error);
+        res.status(500).json({ ok: false, error: "Failed to save automatic voyage recording setting" });
+      }
     });
 
     router.post("/voyage/start", async (req, res) => {
@@ -340,6 +353,32 @@ module.exports = function ajrmMarineCapture(app) {
 
   function ensureDirectories() {
     fs.mkdirSync(options.voyageDirectory, { recursive: true });
+  }
+
+  async function persistPluginConfiguration(changes) {
+    const filePath = PLUGIN_CONFIG_FILE;
+    const directory = path.dirname(filePath);
+    await fs.promises.mkdir(directory, { recursive: true });
+    let existing = {};
+    try {
+      existing = JSON.parse(await fs.promises.readFile(filePath, "utf8"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const configuration =
+      existing.configuration && typeof existing.configuration === "object"
+        ? existing.configuration
+        : {};
+    const updated = {
+      ...existing,
+      configuration: {
+        ...configuration,
+        ...changes,
+      },
+    };
+    const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(temporaryPath, `${JSON.stringify(updated, null, 2)}\n`);
+    await fs.promises.rename(temporaryPath, filePath);
   }
 
   function onDelta(delta) {

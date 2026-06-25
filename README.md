@@ -8,6 +8,10 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+Version `0.5.1` persists the web app's **Enable automatic voyage recording**
+toggle to the Signal K plugin configuration file, so the setting survives Signal
+K and Pi restarts.
+
 Version `0.1.31` writes a compact `tracks/dr-track.jsonl` file into each active
 voyage bundle when AJRM Marine GPS Integrity is publishing navigation integrity
 state. The track records GPS, operational DR, IDR, trust state, uncertainty, and
