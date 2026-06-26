@@ -37,6 +37,7 @@ module.exports = function ajrmMarineCapture(app) {
   let speedKnots = null;
   let movingSinceMs = null;
   let stoppedSinceMs = null;
+  let autoStartInhibited = false;
   let lastBundle = null;
   let disk = null;
   let stoppingVoyage = false;
@@ -315,6 +316,7 @@ module.exports = function ajrmMarineCapture(app) {
     router.post("/voyage/stop", async (_req, res) => {
       try {
         const bundle = await stopVoyage("manual");
+        inhibitAutoStartUntilStationary();
         res.json({ ok: true, bundle });
       } catch (error) {
         res.status(400).json({ ok: false, error: error.message });
@@ -453,14 +455,17 @@ module.exports = function ajrmMarineCapture(app) {
     }
 
     const now = Date.now();
-    const moving = Number(speedKnots) >= options.movementSpeedKnots;
-    if (moving) {
-      movingSinceMs = movingSinceMs || now;
-      stoppedSinceMs = null;
-    } else {
-      stoppedSinceMs = stoppedSinceMs || now;
-      movingSinceMs = null;
-    }
+    const movement = nextMovementGateState({
+      speedKnots,
+      movementSpeedKnots: options.movementSpeedKnots,
+      now,
+      movingSinceMs,
+      stoppedSinceMs,
+      autoStartInhibited,
+    });
+    movingSinceMs = movement.movingSinceMs;
+    stoppedSinceMs = movement.stoppedSinceMs;
+    autoStartInhibited = movement.autoStartInhibited;
 
     if (
       options.enabled &&
@@ -1188,6 +1193,7 @@ module.exports = function ajrmMarineCapture(app) {
       enabled: options.enabled,
       state: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled",
       speedKnots,
+      autoStartInhibited,
       thresholds: {
         movementSpeedKnots: options.movementSpeedKnots,
         movementSpeedMetersPerSecond: options.movementSpeedKnots / MPS_TO_KNOTS,
@@ -1229,6 +1235,7 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.enabled", value: options.enabled },
       { path: "plugins.ajrmMarineCapture.state", value: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled" },
       { path: "plugins.ajrmMarineCapture.speedKnots", value: speedKnots },
+      { path: "plugins.ajrmMarineCapture.autoStartInhibited", value: autoStartInhibited },
       { path: "plugins.ajrmMarineCapture.thresholds.movementSpeedKnots", value: options.movementSpeedKnots },
       {
         path: "plugins.ajrmMarineCapture.thresholds.movementSpeedMetersPerSecond",
@@ -1377,6 +1384,13 @@ module.exports = function ajrmMarineCapture(app) {
       message,
     });
     recentEvents.splice(50);
+  }
+
+  function inhibitAutoStartUntilStationary() {
+    autoStartInhibited = true;
+    movingSinceMs = null;
+    stoppedSinceMs = null;
+    addEvent("auto-start-inhibited", "Automatic voyage start inhibited until stationary after manual stop");
   }
 
   function logError(message, error) {
@@ -1926,6 +1940,31 @@ function speedKnotsFromSog(value) {
   return Number.isFinite(number) ? Math.max(0, number * MPS_TO_KNOTS) : null;
 }
 
+function nextMovementGateState({
+  speedKnots,
+  movementSpeedKnots,
+  now,
+  movingSinceMs,
+  stoppedSinceMs,
+  autoStartInhibited,
+}) {
+  const moving = Number(speedKnots) >= Number(movementSpeedKnots);
+  if (moving) {
+    return {
+      moving,
+      movingSinceMs: autoStartInhibited ? null : movingSinceMs || now,
+      stoppedSinceMs: null,
+      autoStartInhibited: autoStartInhibited === true,
+    };
+  }
+  return {
+    moving,
+    movingSinceMs: null,
+    stoppedSinceMs: stoppedSinceMs || now,
+    autoStartInhibited: false,
+  };
+}
+
 function expandHome(value) {
   const text = String(value || "");
   if (text === "~") return os.homedir();
@@ -1986,3 +2025,8 @@ function safePathPart(value) {
 function safeBaseName(value) {
   return path.basename(String(value || ""));
 }
+
+module.exports._private = {
+  nextMovementGateState,
+  speedKnotsFromSog,
+};

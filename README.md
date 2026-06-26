@@ -8,6 +8,10 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+Version `0.5.2` prevents automatic recording from immediately restarting after
+a manual stop. Capture now waits until it has seen a below-threshold speed sample
+before arming automatic start again.
+
 Version `0.5.1` persists the web app's **Enable automatic voyage recording**
 toggle to the Signal K plugin configuration file, so the setting survives Signal
 K and Pi restarts.
