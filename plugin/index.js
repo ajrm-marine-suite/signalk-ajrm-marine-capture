@@ -38,6 +38,8 @@ module.exports = function ajrmMarineCapture(app) {
   let movingSinceMs = null;
   let stoppedSinceMs = null;
   let autoStartInhibited = false;
+  let loggerPlaybackActive = false;
+  let movementSuppressedUntilFreshSpeed = false;
   let lastBundle = null;
   let disk = null;
   let stoppingVoyage = false;
@@ -390,13 +392,38 @@ module.exports = function ajrmMarineCapture(app) {
       const context = update.context || delta.context || "vessels.self";
       if (!isSelfContext(context)) return;
       (update.values || []).forEach((entry) => {
-        if (entry.path === "navigation.speedOverGround") {
+        if (entry.path === "plugins.ajrmMarineLogger.playback") {
+          updateLoggerPlaybackState(entry.value);
+        } else if (entry.path === "navigation.speedOverGround") {
+          if (loggerPlaybackActive) {
+            movementSuppressedUntilFreshSpeed = true;
+            return;
+          }
           speedKnots = speedKnotsFromSog(entry.value);
+          movementSuppressedUntilFreshSpeed = false;
         } else if (entry.path === AJRM_MARINE_GPS_INTEGRITY_STATE_PATH) {
           appendDrTrackSample(entry.value, update.timestamp || delta.timestamp || new Date().toISOString());
         }
       });
     });
+  }
+
+  function updateLoggerPlaybackState(value) {
+    const playback = unwrapValue(value);
+    const active = playback?.active === true || playback?.playing === true;
+    if (active) {
+      loggerPlaybackActive = true;
+      movementSuppressedUntilFreshSpeed = true;
+      movingSinceMs = null;
+      return;
+    }
+    if (loggerPlaybackActive) {
+      speedKnots = null;
+      movingSinceMs = null;
+      stoppedSinceMs = Date.now();
+      movementSuppressedUntilFreshSpeed = true;
+    }
+    loggerPlaybackActive = false;
   }
 
   function handlePowerIntent(updates) {
@@ -462,6 +489,7 @@ module.exports = function ajrmMarineCapture(app) {
       movingSinceMs,
       stoppedSinceMs,
       autoStartInhibited,
+      movementSuppressed: loggerPlaybackActive || movementSuppressedUntilFreshSpeed,
     });
     movingSinceMs = movement.movingSinceMs;
     stoppedSinceMs = movement.stoppedSinceMs;
@@ -490,6 +518,7 @@ module.exports = function ajrmMarineCapture(app) {
 
   function refreshSpeedFromSelfPath() {
     if (typeof app.getSelfPath !== "function") return;
+    if (loggerPlaybackActive || movementSuppressedUntilFreshSpeed) return;
     speedKnots = speedKnotsFromSog(app.getSelfPath("navigation.speedOverGround"));
   }
 
@@ -1193,6 +1222,8 @@ module.exports = function ajrmMarineCapture(app) {
       enabled: options.enabled,
       state: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled",
       speedKnots,
+      loggerPlaybackActive,
+      movementSuppressedUntilFreshSpeed,
       autoStartInhibited,
       thresholds: {
         movementSpeedKnots: options.movementSpeedKnots,
@@ -1235,6 +1266,8 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.enabled", value: options.enabled },
       { path: "plugins.ajrmMarineCapture.state", value: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled" },
       { path: "plugins.ajrmMarineCapture.speedKnots", value: speedKnots },
+      { path: "plugins.ajrmMarineCapture.loggerPlaybackActive", value: loggerPlaybackActive },
+      { path: "plugins.ajrmMarineCapture.movementSuppressedUntilFreshSpeed", value: movementSuppressedUntilFreshSpeed },
       { path: "plugins.ajrmMarineCapture.autoStartInhibited", value: autoStartInhibited },
       { path: "plugins.ajrmMarineCapture.thresholds.movementSpeedKnots", value: options.movementSpeedKnots },
       {
@@ -1947,7 +1980,16 @@ function nextMovementGateState({
   movingSinceMs,
   stoppedSinceMs,
   autoStartInhibited,
+  movementSuppressed = false,
 }) {
+  if (movementSuppressed) {
+    return {
+      moving: false,
+      movingSinceMs: null,
+      stoppedSinceMs: stoppedSinceMs || now,
+      autoStartInhibited: autoStartInhibited === true,
+    };
+  }
   const moving = Number(speedKnots) >= Number(movementSpeedKnots);
   if (moving) {
     return {

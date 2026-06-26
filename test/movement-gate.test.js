@@ -47,3 +47,20 @@ test("manual stop inhibits automatic restart until a stationary sample is seen",
   assert.equal(movingAgain.stoppedSinceMs, null);
   assert.equal(movingAgain.autoStartInhibited, false);
 });
+
+test("logger playback suppression prevents movement autostart", () => {
+  const suppressed = nextMovementGateState({
+    speedKnots: 6,
+    movementSpeedKnots: 0.68,
+    now: 1000,
+    movingSinceMs: null,
+    stoppedSinceMs: null,
+    autoStartInhibited: false,
+    movementSuppressed: true,
+  });
+
+  assert.equal(suppressed.moving, false);
+  assert.equal(suppressed.movingSinceMs, null);
+  assert.equal(suppressed.stoppedSinceMs, 1000);
+  assert.equal(suppressed.autoStartInhibited, false);
+});

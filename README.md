@@ -8,6 +8,9 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+Version `0.5.3` ignores AJRM Marine Logger replay movement for automatic voyage
+start, so replaying an old log does not create a new voyage recording.
+
 Version `0.5.2` prevents automatic recording from immediately restarting after
 a manual stop. Capture now waits until it has seen a below-threshold speed sample
 before arming automatic start again.
