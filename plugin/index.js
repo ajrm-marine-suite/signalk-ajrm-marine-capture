@@ -1372,8 +1372,8 @@ module.exports = function ajrmMarineCapture(app) {
     const notificationPath = `notifications.plugins.ajrmMarineCapture.${id}.${safeLeaf}`;
     const now = new Date().toISOString();
     notificationSequence += 1;
-    const eventId = `watchkeeper-capture-${id}-${safeLeaf}-${notificationSequence}`;
-    const subjectKey = `watchkeeper-capture:${id}:${safeLeaf}`;
+    const eventId = `ajrm-marine-capture-${id}-${safeLeaf}-${notificationSequence}`;
+    const subjectKey = `ajrm-marine-capture:${id}:${safeLeaf}`;
     app.handleMessage(plugin.id, {
       context: "vessels.self",
       updates: [
@@ -1391,7 +1391,7 @@ module.exports = function ajrmMarineCapture(app) {
                   category: "voyage-capture",
                   ajrmMarineNotifications: {
                     schemaVersion: 1,
-                    provider: "watchkeeper-capture",
+                    provider: "ajrm-marine-capture",
                     providerSessionId: notificationSessionId,
                     sourceSequence: notificationSequence,
                     correlationId: randomUUID(),
@@ -1858,7 +1858,7 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   const index = await readVoyageZipIndex(sourceZipPath);
   const references = Array.isArray(index?.captureReferences) ? index.captureReferences : [];
   if (!references.length) return null;
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "watchkeeper-voyage-download-"));
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ajrm-marine-voyage-download-"));
   const workDir = path.join(directory, "bundle");
   const outputPath = path.join(directory, fileName);
   await fs.promises.mkdir(workDir, { recursive: true });

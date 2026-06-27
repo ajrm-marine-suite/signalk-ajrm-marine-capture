@@ -193,7 +193,7 @@ async function downloadSelectedVoyage(bundle) {
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = bundle.fileName || downloadFileName(response) || "watchkeeper-voyage.zip";
+    link.download = bundle.fileName || downloadFileName(response) || "ajrm-marine-voyage.zip";
     document.body.appendChild(link);
     link.click();
     link.remove();

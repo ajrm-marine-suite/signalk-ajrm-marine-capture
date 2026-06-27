@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.8
+
+- Rename voyage notification identifiers and portable-download fallback names to AJRM Marine naming.
+
 ## 0.5.7
 
 - Rename the capture index schema identifier to `ajrm-marine-capture-index-v1`.
