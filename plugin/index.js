@@ -19,6 +19,9 @@ const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
 const CAPTURE_FILE_MODES = new Set(["portable", "reference"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
 const AJRM_MARINE_GPS_INTEGRITY_STATE_PATH = "plugins.ajrmMarineGpsIntegrity.navigationIntegrity";
+const AJRM_MARINE_TRAFFIC_TARGETS_PATH = "plugins.ajrmMarineTraffic.targets";
+const AJRM_MARINE_TRAFFIC_PROFILES_PATH = "plugins.ajrmMarineTraffic.profiles";
+const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoProfile";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
 const PLUGIN_CONFIG_FILE = path.join(
   os.homedir(),
@@ -40,6 +43,10 @@ module.exports = function ajrmMarineCapture(app) {
   let autoStartInhibited = false;
   let loggerPlaybackActive = false;
   let movementSuppressedUntilFreshSpeed = false;
+  let navigationContext = {
+    profile: null,
+    nearestHarbourName: null,
+  };
   let lastBundle = null;
   let disk = null;
   let stoppingVoyage = false;
@@ -403,9 +410,50 @@ module.exports = function ajrmMarineCapture(app) {
           movementSuppressedUntilFreshSpeed = false;
         } else if (entry.path === AJRM_MARINE_GPS_INTEGRITY_STATE_PATH) {
           appendDrTrackSample(entry.value, update.timestamp || delta.timestamp || new Date().toISOString());
+        } else if (entry.path === AJRM_MARINE_TRAFFIC_TARGETS_PATH) {
+          updateNavigationContextFromTrafficTargets(entry.value);
+        } else if (entry.path === AJRM_MARINE_TRAFFIC_PROFILES_PATH) {
+          updateNavigationContextFromTrafficProfiles(entry.value);
+        } else if (entry.path === AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH) {
+          updateNavigationContextFromAutoProfile(entry.value);
         }
       });
     });
+  }
+
+  function refreshNavigationContextFromSelfPath() {
+    updateNavigationContextFromTrafficTargets(app.getSelfPath?.(AJRM_MARINE_TRAFFIC_TARGETS_PATH));
+    updateNavigationContextFromTrafficProfiles(app.getSelfPath?.(AJRM_MARINE_TRAFFIC_PROFILES_PATH));
+    updateNavigationContextFromAutoProfile(app.getSelfPath?.(AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH));
+  }
+
+  function updateNavigationContextFromTrafficTargets(value) {
+    const targets = unwrapValue(value);
+    const profile = normalizeTrafficProfile(targets?.profile);
+    if (profile) setNavigationProfile(profile);
+  }
+
+  function updateNavigationContextFromTrafficProfiles(value) {
+    const profiles = unwrapValue(value);
+    const profile = normalizeTrafficProfile(profiles?.current);
+    if (profile) setNavigationProfile(profile);
+  }
+
+  function updateNavigationContextFromAutoProfile(value) {
+    const autoProfile = unwrapValue(value);
+    const profile = normalizeTrafficProfile(autoProfile?.profile);
+    if (profile) setNavigationProfile(profile);
+    const contextProfile = profile || navigationContext.profile;
+    const harbourName = cleanHarbourName(
+      autoProfile?.insideRegionName ||
+        (contextProfile === "harbor" ? autoProfile?.nearestRegionName : ""),
+    );
+    navigationContext.nearestHarbourName = harbourName || null;
+  }
+
+  function setNavigationProfile(profile) {
+    navigationContext.profile = profile;
+    if (profile !== "harbor") navigationContext.nearestHarbourName = null;
   }
 
   function updateLoggerPlaybackState(value) {
@@ -525,7 +573,14 @@ module.exports = function ajrmMarineCapture(app) {
   async function startVoyage(reason) {
     if (currentVoyage) return summarizeVoyage(currentVoyage);
     ensureDirectories();
+    refreshNavigationContextFromSelfPath();
     const startedAt = new Date();
+    const comment = normalizeComment(nextVoyageComment)
+      || defaultVoyageComment({
+        startedAt,
+        profile: navigationContext.profile,
+        harbourName: navigationContext.nearestHarbourName,
+      });
     const id = `voyage-${formatFileTime(startedAt)}`;
     const directory = path.join(options.voyageDirectory, id);
     await fs.promises.mkdir(path.join(directory, "snapshots"), { recursive: true });
@@ -543,7 +598,7 @@ module.exports = function ajrmMarineCapture(app) {
       directory,
       startedAt: startedAt.toISOString(),
       reason,
-      comment: nextVoyageComment,
+      comment,
       snapshotCount: 0,
       captureMode: options.captureMode,
       captureFileMode: options.captureFileMode,
@@ -1212,6 +1267,7 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function buildStatus() {
+    refreshNavigationContextFromSelfPath();
     const ajrmMarineLoggerApi = getCapturePlusApi();
     const ajrmMarineLogger = ajrmMarineLoggerApi?.status
       ? await ajrmMarineLoggerApi.status().catch((error) => ({ ok: false, error: error.message }))
@@ -1241,7 +1297,13 @@ module.exports = function ajrmMarineCapture(app) {
       captureMode: options.captureMode,
       captureFileMode: options.captureFileMode,
       currentVoyage: currentVoyage ? summarizeVoyage(currentVoyage) : null,
-      voyageComment: currentVoyage ? currentVoyage.comment || "" : nextVoyageComment,
+      voyageComment: currentVoyage
+        ? currentVoyage.comment || ""
+        : nextVoyageComment || defaultVoyageComment({
+            startedAt: new Date(),
+            profile: navigationContext.profile,
+            harbourName: navigationContext.nearestHarbourName,
+          }),
       lastBundle,
       voyages: await listVoyageBundles(),
       disk,
@@ -2088,6 +2150,39 @@ function normalizeComment(value) {
     .slice(0, 2000);
 }
 
+function defaultVoyageComment({ startedAt = new Date(), profile, harbourName } = {}) {
+  const day = dayOfWeek(startedAt);
+  const harbour = cleanHarbourName(harbourName);
+  if (harbour) return `Departing ${harbour} on ${day}`;
+  if (isAnchorageProfile(profile)) return `Departing anchorage on ${day}`;
+  return `Departing ${day}`;
+}
+
+function dayOfWeek(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
+  return new Intl.DateTimeFormat("en-GB", { weekday: "long" }).format(safeDate);
+}
+
+function cleanHarbourName(value) {
+  const text = String(value || "")
+    .replace(/^harbou?r\s*:\s*/i, "")
+    .trim()
+    .replace(/\s+/g, " ");
+  return text || "";
+}
+
+function normalizeTrafficProfile(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "anchored" || text === "anchorage") return "anchor";
+  if (text === "harbour") return "harbor";
+  return ["anchor", "harbor", "coastal", "offshore"].includes(text) ? text : null;
+}
+
+function isAnchorageProfile(value) {
+  return normalizeTrafficProfile(value) === "anchor";
+}
+
 function formatFileTime(date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
@@ -2123,7 +2218,10 @@ function safeBaseName(value) {
 }
 
 module.exports._private = {
+  cleanHarbourName,
+  defaultVoyageComment,
   nextMovementGateState,
+  normalizeTrafficProfile,
   reconcilePortableCaptureReferences,
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,

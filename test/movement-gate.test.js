@@ -2,7 +2,52 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const createPlugin = require("../plugin");
 
-const { nextMovementGateState, resetMovementGateForVoyageStart } = createPlugin._private;
+const {
+  cleanHarbourName,
+  defaultVoyageComment,
+  nextMovementGateState,
+  normalizeTrafficProfile,
+  resetMovementGateForVoyageStart,
+} = createPlugin._private;
+
+test("default voyage comment names the harbour and weekday", () => {
+  assert.equal(
+    defaultVoyageComment({
+      startedAt: new Date("2026-06-27T10:00:00.000Z"),
+      profile: "harbor",
+      harbourName: "Harbour: Craobh Marina",
+    }),
+    "Departing Craobh Marina on Saturday",
+  );
+});
+
+test("default voyage comment names anchorage when no harbour is known", () => {
+  assert.equal(
+    defaultVoyageComment({
+      startedAt: new Date("2026-06-28T10:00:00.000Z"),
+      profile: "anchor",
+      harbourName: "",
+    }),
+    "Departing anchorage on Sunday",
+  );
+});
+
+test("default voyage comment falls back to weekday only away from harbour and anchorage", () => {
+  assert.equal(
+    defaultVoyageComment({
+      startedAt: new Date("2026-06-29T10:00:00.000Z"),
+      profile: "coastal",
+      harbourName: "",
+    }),
+    "Departing Monday",
+  );
+});
+
+test("voyage comment helpers normalize harbour names and profiles", () => {
+  assert.equal(cleanHarbourName("Harbor:  Oban   Bay "), "Oban Bay");
+  assert.equal(normalizeTrafficProfile("Anchorage"), "anchor");
+  assert.equal(normalizeTrafficProfile("Harbour"), "harbor");
+});
 
 test("manual stop inhibits automatic restart until a stationary sample is seen", () => {
   const movingWhileInhibited = nextMovementGateState({
