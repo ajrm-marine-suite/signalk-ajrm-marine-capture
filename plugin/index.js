@@ -1804,26 +1804,29 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   await fs.promises.mkdir(path.join(workDir, "capture"), { recursive: true });
   const portableIndexPath = path.join(workDir, "index.json");
   const portableIndex = await readJson(portableIndexPath) || index;
-  const captureFiles = [];
+  const copiedReferences = [];
   const copiedNames = new Set();
   const missingReferences = [];
   for (const reference of references) {
     const copied = await copyCaptureReferenceForDownload(reference, path.join(workDir, "capture"), copiedNames);
-    if (copied) captureFiles.push(copied);
+    if (copied) copiedReferences.push(copied);
     else missingReferences.push(reference.fileName || reference.sourcePath || "unknown");
   }
+  const captureFiles = copiedReferences.map((reference) => reference.fileName);
   portableIndex.originalCaptureFileMode = portableIndex.captureFileMode || "reference";
   portableIndex.captureFileMode = "portable-download";
   portableIndex.captureFiles = captureFiles;
   portableIndex.captureIndex = await buildCaptureIndexForDirectory(workDir, captureFiles);
-  reconcilePortableCaptureReferences(portableIndex);
+  reconcilePortableCaptureReferences(portableIndex, copiedReferences);
+  rewritePortableDownloadEvents(portableIndex, copiedReferences, missingReferences);
   portableIndex.portableDownload = {
     createdAt: new Date().toISOString(),
     copiedCaptureFiles: captureFiles.length,
+    copiedCaptureBytes: copiedReferences.reduce((sum, reference) => sum + Number(reference.bytes || 0), 0),
     missingReferences,
   };
   portableIndex.hints = [
-    ...(Array.isArray(portableIndex.hints) ? portableIndex.hints : []),
+    ...(Array.isArray(portableIndex.hints) ? portableIndex.hints.filter((hint) => !String(hint).includes("captureFileMode is reference")) : []),
     "This download was rebuilt on demand from a reference-mode voyage bundle. Copied raw AJRM Marine Logger files are in capture/ when they were still present on this server.",
   ];
   await writeJson(portableIndexPath, portableIndex);
@@ -1831,20 +1834,29 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   return { path: outputPath, directory };
 }
 
-function reconcilePortableCaptureReferences(index) {
+function reconcilePortableCaptureReferences(index, copiedReferences = []) {
   const summariesByLogicalName = new Map();
   for (const summary of index?.captureIndex?.files || []) {
     if (!summary?.fileName) continue;
     summariesByLogicalName.set(logicalCaptureFileNameForDownload(summary.fileName), summary);
   }
   if (!summariesByLogicalName.size || !Array.isArray(index.captureReferences)) return;
+  const copiedByLogicalName = new Map(
+    copiedReferences.map((reference) => [logicalCaptureFileNameForDownload(reference.fileName), reference]),
+  );
   index.captureReferences = index.captureReferences.map((reference) => {
     const summary = summariesByLogicalName.get(logicalCaptureFileNameForDownload(reference?.fileName));
     if (!summary) return reference;
+    const copied = copiedByLogicalName.get(logicalCaptureFileNameForDownload(summary.fileName));
     return {
       ...reference,
+      fileName: summary.fileName,
+      sourcePath: `capture/${summary.fileName}`,
+      compressedSourcePath: "",
       from: summary.firstTimestamp || reference.from || null,
       to: summary.lastTimestamp || reference.to || null,
+      compressed: summary.fileName.endsWith(".gz"),
+      bytes: copied?.bytes ?? reference.bytes ?? null,
       records: summary.records,
     };
   });
@@ -1859,16 +1871,45 @@ async function copyCaptureReferenceForDownload(reference, captureDirectory, copi
     const info = await fs.promises.stat(candidate).catch(() => null);
     if (!info?.isFile()) continue;
     const fileName = path.basename(candidate);
-    if (copiedNames.has(fileName)) return fileName;
-    await fs.promises.copyFile(candidate, path.join(captureDirectory, fileName));
+    if (copiedNames.has(fileName)) return { fileName, bytes: info.size };
+    const targetPath = path.join(captureDirectory, fileName);
+    await fs.promises.copyFile(candidate, targetPath);
     copiedNames.add(fileName);
-    return fileName;
+    return { fileName, bytes: info.size };
   }
   return null;
 }
 
 function logicalCaptureFileNameForDownload(fileName) {
   return String(fileName || "").replace(/\.gz$/i, "");
+}
+
+function rewritePortableDownloadEvents(index, copiedReferences = [], missingReferences = []) {
+  const copiedCount = copiedReferences.length;
+  const missingCount = missingReferences.length;
+  const replacementMessage = copiedCount
+    ? `${copiedCount} AJRM Marine Logger segment${copiedCount === 1 ? "" : "s"} copied into portable download`
+    : "AJRM Marine Logger segments could not be copied into portable download";
+  const replacement = {
+    at: new Date().toISOString(),
+    type: copiedCount ? "capture-copied-portable-download" : "capture-copy-warning",
+    message: missingCount
+      ? `${replacementMessage}; ${missingCount} missing reference${missingCount === 1 ? "" : "s"}`
+      : replacementMessage,
+  };
+  const events = Array.isArray(index.events) ? index.events : [];
+  const rewritten = events.map((event) => {
+    if (event?.type !== "capture-referenced") return event;
+    return {
+      ...event,
+      type: replacement.type,
+      message: replacement.message,
+    };
+  });
+  if (!rewritten.some((event) => event?.type === replacement.type && event?.message === replacement.message)) {
+    rewritten.unshift(replacement);
+  }
+  index.events = rewritten;
 }
 
 async function readJson(filePath) {
@@ -2083,6 +2124,8 @@ function safeBaseName(value) {
 
 module.exports._private = {
   nextMovementGateState,
+  reconcilePortableCaptureReferences,
   resetMovementGateForVoyageStart,
+  rewritePortableDownloadEvents,
   speedKnotsFromSog,
 };

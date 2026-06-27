@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.5
+
+- Correct portable-download voyage metadata so copied compressed capture files are listed with their actual `.gz` filenames, compression state and file sizes.
+- Rewrite portable-download events so they no longer say raw logger segments were only referenced when they have been copied into the download.
+
 ## 0.5.4
 
 - Clear stale movement stop timers when a voyage starts, so a manual start while stationary is not immediately closed by stopped time that accumulated before the voyage began.
