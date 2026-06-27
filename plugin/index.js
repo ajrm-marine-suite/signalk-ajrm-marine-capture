@@ -23,6 +23,10 @@ const AJRM_MARINE_TRAFFIC_TARGETS_PATH = "plugins.ajrmMarineTraffic.targets";
 const AJRM_MARINE_TRAFFIC_PROFILES_PATH = "plugins.ajrmMarineTraffic.profiles";
 const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoProfile";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
+const DEFAULT_LOG_DIRECTORY = "~/AJRMMarineLogs";
+const DEFAULT_VOYAGE_DIRECTORY = `${DEFAULT_LOG_DIRECTORY}/voyages`;
+const LEGACY_LOG_DIRECTORY = ["~/Capture", "PlusLogs"].join("");
+const LEGACY_VOYAGE_DIRECTORY = `${LEGACY_LOG_DIRECTORY}/voyages`;
 const PLUGIN_CONFIG_FILE = path.join(
   os.homedir(),
   ".signalk",
@@ -73,20 +77,20 @@ module.exports = function ajrmMarineCapture(app) {
       voyageDirectory: {
         type: "string",
         title: "Voyage bundle directory",
-        default: "~/CapturePlusLogs/voyages",
+        default: DEFAULT_VOYAGE_DIRECTORY,
       },
       ajrmMarineLoggerLogDirectory: {
         type: "string",
-        title: "CapturePlus log directory",
+        title: "AJRM Marine Logger directory",
         description:
-          "Used to copy completed CapturePlus recordings into the voyage bundle. Keep aligned with CapturePlus.",
-        default: "~/CapturePlusLogs",
+          "Used to copy completed AJRM Marine Logger recordings into the voyage bundle. Keep aligned with AJRM Marine Logger.",
+        default: DEFAULT_LOG_DIRECTORY,
       },
       signalKBaseUrl: {
         type: "string",
         title: "Local Signal K base URL",
         description:
-          "Used for internal CapturePlus and AJRM Marine Snapshot calls. Typical values are http://127.0.0.1:3000 or https://127.0.0.1:3443.",
+          "Used for internal AJRM Marine Logger and AJRM Marine Snapshot calls. Typical values are http://127.0.0.1:3000 or https://127.0.0.1:3443.",
         default: "http://127.0.0.1:3000",
       },
       movementSpeedKnots: {
@@ -111,7 +115,7 @@ module.exports = function ajrmMarineCapture(app) {
       },
       captureBackfillMinutes: {
         type: "integer",
-        title: "CapturePlus backfill minutes on voyage start",
+        title: "Logger backfill minutes on voyage start",
         default: 30,
         minimum: 0,
         maximum: 1440,
@@ -143,7 +147,7 @@ module.exports = function ajrmMarineCapture(app) {
       },
       captureCompressionWaitSeconds: {
         type: "integer",
-        title: "Seconds to wait for CapturePlus gzip after stop",
+        title: "Seconds to wait for Logger gzip after stop",
         description:
           "AJRM Marine Capture waits briefly after stopping AJRM Marine Logger so completed hourly capture segments can become .jsonl.gz before being copied into the voyage bundle.",
         default: 0,
@@ -339,8 +343,8 @@ module.exports = function ajrmMarineCapture(app) {
     const source = value && typeof value === "object" ? value : {};
     return {
       enabled: source.enabled === true,
-      voyageDirectory: expandHome(source.voyageDirectory || "~/CapturePlusLogs/voyages"),
-      ajrmMarineLoggerLogDirectory: expandHome(source.ajrmMarineLoggerLogDirectory || "~/CapturePlusLogs"),
+      voyageDirectory: expandHome(source.voyageDirectory || defaultVoyageDirectory()),
+      ajrmMarineLoggerLogDirectory: expandHome(source.ajrmMarineLoggerLogDirectory || defaultLoggerDirectory()),
       signalKBaseUrl: String(source.signalKBaseUrl || "http://127.0.0.1:3000").replace(/\/+$/, ""),
       movementSpeedKnots: clampNumber(
         source.movementSpeedKnots,
@@ -360,6 +364,18 @@ module.exports = function ajrmMarineCapture(app) {
       deleteWorkingDirectoryAfterZip: source.deleteWorkingDirectoryAfterZip !== false,
       minFreeDiskGb: clampNumber(source.minFreeDiskGb, 2, 0.1, 1024),
     };
+  }
+
+  function defaultLoggerDirectory() {
+    const preferred = expandHome(DEFAULT_LOG_DIRECTORY);
+    const legacy = expandHome(LEGACY_LOG_DIRECTORY);
+    return !fs.existsSync(preferred) && fs.existsSync(legacy) ? LEGACY_LOG_DIRECTORY : DEFAULT_LOG_DIRECTORY;
+  }
+
+  function defaultVoyageDirectory() {
+    const preferred = expandHome(DEFAULT_VOYAGE_DIRECTORY);
+    const legacy = expandHome(LEGACY_VOYAGE_DIRECTORY);
+    return !fs.existsSync(preferred) && fs.existsSync(legacy) ? LEGACY_VOYAGE_DIRECTORY : DEFAULT_VOYAGE_DIRECTORY;
   }
 
   function ensureDirectories() {
@@ -625,7 +641,7 @@ module.exports = function ajrmMarineCapture(app) {
     });
     addEvent("voyage-started", `${id}: ${reason}`);
 
-    currentVoyage.ajrmMarineLogger = await callCapturePlus("/capture/start", {
+    currentVoyage.ajrmMarineLogger = await callAjrmMarineLogger("/capture/start", {
       backfillMinutes: options.captureBackfillMinutes,
     }).catch((error) => ({ ok: false, error: error.message }));
     currentVoyage.captureReferences = initialCaptureReferences(currentVoyage);
@@ -651,7 +667,7 @@ module.exports = function ajrmMarineCapture(app) {
       addVoyageEvent("stop", reason);
       addEvent("voyage-stopping", `${voyage.id}: ${reason}`);
       if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
-      const captureStop = await callCapturePlus("/capture/stop", {}).catch((error) => ({
+      const captureStop = await callAjrmMarineLogger("/capture/stop", {}).catch((error) => ({
         ok: false,
         error: error.message,
       }));
@@ -825,8 +841,8 @@ module.exports = function ajrmMarineCapture(app) {
   async function copyCaptureFiles(voyage, captureStop) {
     const capturesDir = ajrmMarineLoggerCapturesDir();
     const status = options.captureFileMode === "reference"
-      ? await getCapturePlusStatus()
-      : await waitForCapturePlusCompression(capturesDir, voyage, captureStop);
+      ? await getAjrmMarineLoggerStatus()
+      : await waitForAjrmMarineLoggerCompression(capturesDir, voyage, captureStop);
     const segments = captureSegmentsForVoyage(status, voyage, captureStop);
     voyage.captureReferences = segments.map((segment) =>
       captureReference(capturesDir, segment),
@@ -837,7 +853,7 @@ module.exports = function ajrmMarineCapture(app) {
         "capture-referenced",
         `${segments.length} AJRM Marine Logger segment${segments.length === 1 ? "" : "s"} referenced without copying`,
       );
-      if (!segments.length) addVoyageEvent("capture-copy-warning", "No CapturePlus segments matched voyage range");
+      if (!segments.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
       return;
     }
     const copied = [];
@@ -851,7 +867,7 @@ module.exports = function ajrmMarineCapture(app) {
       }
     }
     voyage.captureFiles = copied;
-    if (!copied.length) addVoyageEvent("capture-copy-warning", "No CapturePlus segments matched voyage range");
+    if (!copied.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
   }
 
   function initialCaptureReferences(voyage) {
@@ -879,7 +895,7 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   function ajrmMarineLoggerCapturesDir() {
-    const ajrmMarineLoggerApi = getCapturePlusApi();
+    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
     const capturePaths = ajrmMarineLoggerApi?.paths ? ajrmMarineLoggerApi.paths() : null;
     return capturePaths?.captures || path.join(options.ajrmMarineLoggerLogDirectory, "captures");
   }
@@ -913,9 +929,9 @@ module.exports = function ajrmMarineCapture(app) {
     return null;
   }
 
-  async function waitForCapturePlusCompression(capturesDir, voyage, captureStop) {
+  async function waitForAjrmMarineLoggerCompression(capturesDir, voyage, captureStop) {
     const deadline = Date.now() + options.captureCompressionWaitSeconds * 1000;
-    let status = await getCapturePlusStatus();
+    let status = await getAjrmMarineLoggerStatus();
     while (Date.now() < deadline) {
       const segments = captureSegmentsForVoyage(status, voyage, captureStop);
       if (segments.length && segments.every((segment) => segment.compressed || segment.fileName.endsWith(".gz"))) {
@@ -928,13 +944,13 @@ module.exports = function ajrmMarineCapture(app) {
       );
       if (!plainWithoutGzip) return status;
       await delay(2000);
-      status = await getCapturePlusStatus();
+      status = await getAjrmMarineLoggerStatus();
     }
     return status;
   }
 
-  async function getCapturePlusStatus() {
-    const ajrmMarineLoggerApi = getCapturePlusApi();
+  async function getAjrmMarineLoggerStatus() {
+    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
     if (ajrmMarineLoggerApi?.status) {
       return ajrmMarineLoggerApi.status().catch((error) => ({ ok: false, error: error.message }));
     }
@@ -1251,8 +1267,8 @@ module.exports = function ajrmMarineCapture(app) {
     }
   }
 
-  async function callCapturePlus(route, body) {
-    const ajrmMarineLoggerApi = getCapturePlusApi();
+  async function callAjrmMarineLogger(route, body) {
+    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
     if (ajrmMarineLoggerApi) {
       if (route === "/capture/start" && typeof ajrmMarineLoggerApi.startCapture === "function") {
         const recording = await ajrmMarineLoggerApi.startCapture(body || {});
@@ -1268,7 +1284,7 @@ module.exports = function ajrmMarineCapture(app) {
 
   async function buildStatus() {
     refreshNavigationContextFromSelfPath();
-    const ajrmMarineLoggerApi = getCapturePlusApi();
+    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
     const ajrmMarineLogger = ajrmMarineLoggerApi?.status
       ? await ajrmMarineLoggerApi.status().catch((error) => ({ ok: false, error: error.message }))
       : await httpJson(
@@ -1319,7 +1335,7 @@ module.exports = function ajrmMarineCapture(app) {
     return listVoyageBundlesInDirectory(options.voyageDirectory);
   }
 
-  function getCapturePlusApi() {
+  function getAjrmMarineLoggerApi() {
     return app.ajrmMarineLoggerApi || globalThis[AJRM_MARINE_LOGGER_API_REGISTRY] || null;
   }
 

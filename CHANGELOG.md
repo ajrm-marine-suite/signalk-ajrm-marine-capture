@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.9
+
+- Rename Logger integration settings and defaults to AJRM Marine naming while retaining legacy-directory compatibility on upgraded Pis.
+
 ## 0.5.8
 
 - Rename voyage notification identifiers and portable-download fallback names to AJRM Marine naming.
