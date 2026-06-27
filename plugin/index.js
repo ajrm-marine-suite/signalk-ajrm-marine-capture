@@ -1599,7 +1599,7 @@ async function buildCaptureIndexForDirectory(bundleDirectory, captureFiles) {
     .sort((left, right) => left.timestampMs - right.timestampMs || left.file.localeCompare(right.file) || left.line - right.line)
     .slice(0, 200);
   return {
-    schema: "watchkeeper-capture-index-v1",
+    schema: "ajrm-marine-capture-index-v1",
     sortKey: "delta.updates[].timestamp, fallback capturedAt",
     files,
     sortedSample: sortedSamples.map(({ timestampMs, ...entry }) => entry),

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.7
+
+- Rename the capture index schema identifier to `ajrm-marine-capture-index-v1`.
+
 ## 0.5.6
 
 - Generate an editable default voyage comment when the skipper has not entered one, using the current harbour name or anchorage profile plus the day of the week.
