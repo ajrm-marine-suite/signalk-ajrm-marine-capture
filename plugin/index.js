@@ -533,6 +533,11 @@ module.exports = function ajrmMarineCapture(app) {
     await fs.promises.mkdir(path.join(directory, "system"), { recursive: true });
     await fs.promises.mkdir(path.join(directory, "tracks"), { recursive: true });
 
+    const movementGate = resetMovementGateForVoyageStart();
+    movingSinceMs = movementGate.movingSinceMs;
+    stoppedSinceMs = movementGate.stoppedSinceMs;
+    autoStartInhibited = movementGate.autoStartInhibited;
+
     currentVoyage = {
       id,
       directory,
@@ -2007,6 +2012,14 @@ function nextMovementGateState({
   };
 }
 
+function resetMovementGateForVoyageStart() {
+  return {
+    movingSinceMs: null,
+    stoppedSinceMs: null,
+    autoStartInhibited: false,
+  };
+}
+
 function expandHome(value) {
   const text = String(value || "");
   if (text === "~") return os.homedir();
@@ -2070,5 +2083,6 @@ function safeBaseName(value) {
 
 module.exports._private = {
   nextMovementGateState,
+  resetMovementGateForVoyageStart,
   speedKnotsFromSog,
 };

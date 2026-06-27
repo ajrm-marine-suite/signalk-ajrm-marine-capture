@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const createPlugin = require("../plugin");
 
-const { nextMovementGateState } = createPlugin._private;
+const { nextMovementGateState, resetMovementGateForVoyageStart } = createPlugin._private;
 
 test("manual stop inhibits automatic restart until a stationary sample is seen", () => {
   const movingWhileInhibited = nextMovementGateState({
@@ -63,4 +63,30 @@ test("logger playback suppression prevents movement autostart", () => {
   assert.equal(suppressed.movingSinceMs, null);
   assert.equal(suppressed.stoppedSinceMs, 1000);
   assert.equal(suppressed.autoStartInhibited, false);
+});
+
+test("voyage start clears stale stopped timer from before the voyage", () => {
+  const reset = resetMovementGateForVoyageStart({
+    movingSinceMs: null,
+    stoppedSinceMs: 1000,
+    autoStartInhibited: true,
+  });
+
+  assert.equal(reset.movingSinceMs, null);
+  assert.equal(reset.stoppedSinceMs, null);
+  assert.equal(reset.autoStartInhibited, false);
+
+  const firstStationarySampleAfterStart = nextMovementGateState({
+    speedKnots: 0,
+    movementSpeedKnots: 0.68,
+    now: 61000,
+    movingSinceMs: reset.movingSinceMs,
+    stoppedSinceMs: reset.stoppedSinceMs,
+    autoStartInhibited: reset.autoStartInhibited,
+  });
+
+  assert.equal(firstStationarySampleAfterStart.moving, false);
+  assert.equal(firstStationarySampleAfterStart.movingSinceMs, null);
+  assert.equal(firstStationarySampleAfterStart.stoppedSinceMs, 61000);
+  assert.equal(firstStationarySampleAfterStart.autoStartInhibited, false);
 });
