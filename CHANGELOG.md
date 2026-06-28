@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.11
+
+- Remove obsolete visible app-name wording from the README history.
+
 ## 0.5.10
 
 - Add Signal K AppStore utility category metadata.

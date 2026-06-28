@@ -90,9 +90,9 @@ compatibility.
 Version `0.1.8` uses AJRM Marine Snapshot's in-process API when available, avoiding
 local HTTPS/admin authentication failures during unattended voyage recording.
 
-Version `0.1.7` renamed the visible app to **Voyage Capture** and avoids
-duplicating the same AJRM Marine Logger segment in `index.json` when AJRM Marine Logger reports
-both a plain recording name and the completed `.jsonl.gz` file.
+Version `0.1.7` updated the visible voyage-capture app name and avoids
+duplicating the same AJRM Marine Logger segment in `index.json` when AJRM Marine
+Logger reports both a plain recording name and the completed `.jsonl.gz` file.
 
 For compatibility, the npm package, plugin id, HTTP route, and Signal K paths
 remain `signalk-ajrm-marine-capture` / `ajrmMarineCapture` for now. The plugin
