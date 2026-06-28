@@ -1,6 +1,6 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "description": "Voyage capture and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
@@ -9,6 +9,7 @@
   "keywords": [
     "signalk-node-server-plugin",
     "signalk-webapp",
+    "signalk-category-utility",
     "diagnostics",
     "logger",
     "voyage",
