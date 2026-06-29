@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.13
+
+- Preserve DR Plotter observed-fix plot types and notes when bundling
+  `tracks/dr-plot-fixes.json` into voyage downloads.
+
 ## 0.5.12
 
 - Copy AJRM Marine DR Plotter persisted plot fixes into voyage bundles as
