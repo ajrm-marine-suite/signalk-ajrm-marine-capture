@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.15
+
+- Preserve DR Plotter's resource-style navigator-fix metadata when bundling
+  `tracks/dr-plot-fixes.json`, so GPS/DR/observed fix records keep their
+  GeoJSON point, method, and chart-symbol fields for later analysis.
+
 ## 0.5.14
 
 - Preserve DR Plotter GPS-return plot fixes in voyage bundles.

@@ -1635,6 +1635,35 @@ function normalizeDrPlotFix(value) {
     cogTrueDegrees: numberOrNull(value.cogTrueDegrees),
     currentDriftMps: numberOrNull(value.currentDriftMps),
     currentSetTrueDegrees: numberOrNull(value.currentSetTrueDegrees),
+    resource: normalizeDrFixResource(value.resource),
+  };
+}
+
+function normalizeDrFixResource(value) {
+  if (!value || typeof value !== "object") return null;
+  const resourceType = stringOrNull(value.resourceType);
+  const feature = normalizeGeoJsonPointFeature(value.feature);
+  if (!resourceType || !feature) return null;
+  return { resourceType, feature };
+}
+
+function normalizeGeoJsonPointFeature(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.type !== "Feature") return null;
+  const coordinates = Array.isArray(value.geometry?.coordinates) ? value.geometry.coordinates.map(Number) : [];
+  if (value.geometry?.type !== "Point" || coordinates.length < 2) return null;
+  const longitude = coordinates[0];
+  const latitude = coordinates[1];
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  const properties = value.properties && typeof value.properties === "object" ? { ...value.properties } : {};
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [longitude, latitude],
+    },
+    properties,
   };
 }
 
