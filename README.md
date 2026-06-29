@@ -8,6 +8,10 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+Version `0.5.12` copies AJRM Marine DR Plotter's persisted navigator plot fixes
+into voyage bundles as `tracks/dr-plot-fixes.json`, filtered to the voyage time
+range and referenced from `index.json`.
+
 Version `0.5.3` ignores AJRM Marine Logger replay movement for automatic voyage
 start, so replaying an old log does not create a new voyage recording.
 

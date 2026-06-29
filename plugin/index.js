@@ -23,6 +23,14 @@ const AJRM_MARINE_TRAFFIC_TARGETS_PATH = "plugins.ajrmMarineTraffic.targets";
 const AJRM_MARINE_TRAFFIC_PROFILES_PATH = "plugins.ajrmMarineTraffic.profiles";
 const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoProfile";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
+const DR_PLOT_FIXES_RELATIVE_PATH = "tracks/dr-plot-fixes.json";
+const DR_PLOTTER_FIXES_FILE = path.join(
+  os.homedir(),
+  ".signalk",
+  "plugin-config-data",
+  "signalk-ajrm-marine-dr-plotter",
+  "plot-fixes.json",
+);
 const DEFAULT_LOG_DIRECTORY = "~/AJRMMarineLogs";
 const DEFAULT_VOYAGE_DIRECTORY = `${DEFAULT_LOG_DIRECTORY}/voyages`;
 const LEGACY_LOG_DIRECTORY = ["~/Capture", "PlusLogs"].join("");
@@ -676,6 +684,7 @@ module.exports = function ajrmMarineCapture(app) {
       voyage.stoppedAt = stoppedAt;
       voyage.stopReason = reason;
       await closeDrTrack(voyage, stoppedAt);
+      await copyDrPlotFixes(voyage);
       await copyCaptureFiles(voyage, captureStop);
       const index = await writeVoyageIndex(voyage);
       const bundle = await bundleVoyage(voyage, index);
@@ -762,6 +771,7 @@ module.exports = function ajrmMarineCapture(app) {
         "No copied AJRM Marine Logger files were present in the interrupted voyage directory",
       );
     }
+    await copyDrPlotFixes(voyage);
     await writeJson(path.join(directory, "system", "recovery-status.json"), {
       ok: true,
       recoveredAt: now,
@@ -1059,6 +1069,7 @@ module.exports = function ajrmMarineCapture(app) {
       captureFiles: voyage.captureFiles || [],
       captureReferences: voyage.captureReferences || [],
       drTrack: voyage.drTrack || null,
+      drPlotFixes: voyage.drPlotFixes || null,
       captureIndex,
       events: voyage.events,
       files,
@@ -1066,6 +1077,7 @@ module.exports = function ajrmMarineCapture(app) {
         "Start with index.json.",
         "Read snapshots/start and snapshots/stop before opening large capture logs.",
         "Use snapshot timestamps and capture metadata to locate interesting intervals.",
+        "Use tracks/dr-plot-fixes.json for navigator-style timed, manual, and GPS-lost DR plot fixes when present.",
         "Capture files may contain AJRM Marine Logger backfill followed by live records. Use captureIndex for timestamp order, overlap and duplicate guidance before scanning large logs.",
         "If captureFileMode is reference, raw AJRM Marine Logger files were not copied into the bundle; use captureReferences on this server to locate the source recordings.",
       ],
@@ -1546,7 +1558,97 @@ module.exports = function ajrmMarineCapture(app) {
     if (!stream) return;
     await new Promise((resolve) => stream.end(resolve));
   }
+
+  async function copyDrPlotFixes(voyage) {
+    if (!voyage?.directory) return;
+    const source = await readJson(DR_PLOTTER_FIXES_FILE);
+    const allFixes = normalizeDrPlotFixes(source?.plotFixes || source?.fixes || []);
+    const voyageFixes = filterDrPlotFixesForVoyage(allFixes, voyage.startedAt, voyage.stoppedAt);
+    voyage.drPlotFixes = {
+      fileName: DR_PLOT_FIXES_RELATIVE_PATH,
+      samples: voyageFixes.length,
+      sourceFile: DR_PLOTTER_FIXES_FILE,
+      startedAt: voyage.startedAt || null,
+      stoppedAt: voyage.stoppedAt || null,
+    };
+    if (!source) {
+      voyage.drPlotFixes.sourceAvailable = false;
+      appendVoyageEvent(voyage, "dr-plot-fixes-missing", "No AJRM Marine DR Plotter plot-fix file was available");
+      return;
+    }
+    voyage.drPlotFixes.sourceAvailable = true;
+    await fs.promises.mkdir(path.join(voyage.directory, "tracks"), { recursive: true });
+    await writeJson(path.join(voyage.directory, DR_PLOT_FIXES_RELATIVE_PATH), {
+      schemaVersion: 1,
+      source: "AJRM Marine DR Plotter",
+      voyageId: voyage.id || null,
+      startedAt: voyage.startedAt || null,
+      stoppedAt: voyage.stoppedAt || null,
+      plotFixes: voyageFixes,
+    });
+    appendVoyageEvent(
+      voyage,
+      "dr-plot-fixes",
+      `${voyageFixes.length} AJRM Marine DR Plotter fix${voyageFixes.length === 1 ? "" : "es"} copied into voyage bundle`,
+    );
+  }
 };
+
+function filterDrPlotFixesForVoyage(plotFixes, startedAt, stoppedAt) {
+  const startMs = Date.parse(startedAt);
+  const stopMs = Date.parse(stoppedAt);
+  return normalizeDrPlotFixes(plotFixes).filter((fix) => {
+    const timestampMs = Date.parse(fix.timestamp);
+    if (!Number.isFinite(timestampMs)) return false;
+    if (Number.isFinite(startMs) && timestampMs < startMs) return false;
+    if (Number.isFinite(stopMs) && timestampMs > stopMs) return false;
+    return true;
+  });
+}
+
+function normalizeDrPlotFixes(value) {
+  return (Array.isArray(value) ? value : [])
+    .map(normalizeDrPlotFix)
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+}
+
+function normalizeDrPlotFix(value) {
+  const timestamp = normalizeIsoTimestamp(value?.timestamp);
+  const position = normalizeLatLonPosition(value?.position);
+  if (!timestamp || !position) return null;
+  return {
+    id: typeof value.id === "string" && value.id.trim() ? value.id.trim().slice(0, 80) : `plot-${timestamp}`,
+    timestamp,
+    automatic: value.automatic === true,
+    plotType: ["manual", "timed", "gps-lost"].includes(value.plotType) ? value.plotType : null,
+    position,
+    trust: stringOrNull(value.trust),
+    drSource: stringOrNull(value.drSource),
+    uncertaintyRadiusMeters: numberOrNull(value.uncertaintyRadiusMeters),
+    lastTrustedFixAgeSeconds: numberOrNull(value.lastTrustedFixAgeSeconds),
+    distanceFromLastTrustedFixMeters: numberOrNull(value.distanceFromLastTrustedFixMeters),
+    stwMps: numberOrNull(value.stwMps),
+    headingTrueDegrees: numberOrNull(value.headingTrueDegrees),
+    sogMps: numberOrNull(value.sogMps),
+    cogTrueDegrees: numberOrNull(value.cogTrueDegrees),
+    currentDriftMps: numberOrNull(value.currentDriftMps),
+    currentSetTrueDegrees: numberOrNull(value.currentSetTrueDegrees),
+  };
+}
+
+function normalizeIsoTimestamp(value) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function normalizeLatLonPosition(value) {
+  const latitude = numberOrNull(value?.latitude);
+  const longitude = numberOrNull(value?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+  return { latitude, longitude };
+}
 
 function drTrackSample(value, timestamp) {
   const state = unwrapValue(value);
@@ -1599,6 +1701,10 @@ function drTrackSampleKey(sample) {
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 120) : null;
 }
 
 async function buildCaptureIndexForDirectory(bundleDirectory, captureFiles) {
@@ -2236,7 +2342,9 @@ function safeBaseName(value) {
 module.exports._private = {
   cleanHarbourName,
   defaultVoyageComment,
+  filterDrPlotFixesForVoyage,
   nextMovementGateState,
+  normalizeDrPlotFixes,
   normalizeTrafficProfile,
   reconcilePortableCaptureReferences,
   resetMovementGateForVoyageStart,

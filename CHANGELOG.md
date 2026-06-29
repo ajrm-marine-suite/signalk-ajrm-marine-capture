@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.12
+
+- Copy AJRM Marine DR Plotter persisted plot fixes into voyage bundles as
+  `tracks/dr-plot-fixes.json`, filtered to the voyage time range and referenced
+  from `index.json`.
+
 ## 0.5.11
 
 - Remove obsolete visible app-name wording from the README history.
