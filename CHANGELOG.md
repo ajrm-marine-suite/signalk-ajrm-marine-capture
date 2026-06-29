@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.14
+
+- Preserve DR Plotter GPS-return plot fixes in voyage bundles.
+
 ## 0.5.13
 
 - Preserve DR Plotter observed-fix plot types and notes when bundling

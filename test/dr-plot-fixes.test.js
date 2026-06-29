@@ -30,6 +30,12 @@ test("filters DR Plotter fixes to the voyage time window", () => {
       note: "bearing fix",
     },
     {
+      id: "gps-return",
+      timestamp: "2026-06-29T10:06:00.000Z",
+      position: { latitude: 56.31, longitude: -5.31 },
+      plotType: "gps-return",
+    },
+    {
       id: "after",
       timestamp: "2026-06-29T10:10:01.000Z",
       position: { latitude: 56.4, longitude: -5.4 },
@@ -41,12 +47,13 @@ test("filters DR Plotter fixes to the voyage time window", () => {
     },
   ], "2026-06-29T10:00:00.000Z", "2026-06-29T10:10:00.000Z");
 
-  assert.deepEqual(fixes.map((fix) => fix.id), ["lost", "observed"]);
+  assert.deepEqual(fixes.map((fix) => fix.id), ["lost", "observed", "gps-return"]);
   assert.equal(fixes[0].plotType, "gps-lost");
   assert.equal(fixes[0].position.latitude, 56.2);
   assert.equal(fixes[0].distanceFromLastTrustedFixMeters, 42);
   assert.equal(fixes[1].plotType, "observed-fix");
   assert.equal(fixes[1].note, "bearing fix");
+  assert.equal(fixes[2].plotType, "gps-return");
 });
 
 test("normalizes DR Plotter fixes without a voyage filter", () => {
