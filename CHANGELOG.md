@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.16
+
+- Add Signal K AppStore relationship metadata for the voyage debug mini-suite:
+  Logger, Snapshot, and Voyage Viewer.
+- Add the reusable Signal K plugin CI workflow.
+
 ## 0.5.15
 
 - Preserve DR Plotter's resource-style navigator-fix metadata when bundling
