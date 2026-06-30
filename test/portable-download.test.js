@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const path = require("node:path");
 const test = require("node:test");
 const createPlugin = require("../plugin");
 
@@ -12,8 +13,8 @@ test("portable download references describe the copied compressed capture file",
     captureReferences: [
       {
         fileName: "capture-2026-06-27T16-11-52-521Z.jsonl",
-        sourcePath: "/home/pi/AJRMMarineLogs/captures/capture-2026-06-27T16-11-52-521Z.jsonl",
-        compressedSourcePath: "/home/pi/AJRMMarineLogs/captures/capture-2026-06-27T16-11-52-521Z.jsonl.gz",
+        sourcePath: path.join("~", "AJRMMarineLogs", "captures", "capture-2026-06-27T16-11-52-521Z.jsonl"),
+        compressedSourcePath: path.join("~", "AJRMMarineLogs", "captures", "capture-2026-06-27T16-11-52-521Z.jsonl.gz"),
         from: "2026-06-27T16:11:52.520Z",
         to: "2026-06-27T17:11:31.952Z",
         compressed: false,

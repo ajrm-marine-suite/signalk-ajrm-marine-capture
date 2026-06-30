@@ -1,6 +1,6 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.5.16",
+  "version": "0.5.17",
   "description": "Voyage capture and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
@@ -47,5 +47,8 @@
       "signalk-ajrm-marine-snapshot",
       "signalk-ajrm-marine-voyage-viewer"
     ]
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.18"
   }
 }

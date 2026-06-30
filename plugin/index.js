@@ -7,6 +7,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
+const AdmZip = require("adm-zip");
 const packageInfo = require("../package.json");
 
 const MPS_TO_KNOTS = 1.9438444924406046;
@@ -1251,7 +1252,7 @@ module.exports = function ajrmMarineCapture(app) {
     const zipName = `${voyage.id}.zip`;
     const zipPath = path.join(options.voyageDirectory, zipName);
     try {
-      await execFile("zip", ["-qr", zipPath, "."], { cwd: voyage.directory, timeout: 120000 });
+      await writeDirectoryZip(zipPath, voyage.directory);
       return {
         fileName: zipName,
         path: zipPath,
@@ -1996,11 +1997,10 @@ async function listVoyageBundlesInDirectory(directory) {
 
 async function readVoyageZipIndex(filePath) {
   try {
-    const stdout = await execFile("unzip", ["-p", filePath, "index.json"], {
-      timeout: 10000,
-      maxBuffer: 1024 * 1024,
-    });
-    return JSON.parse(stdout);
+    const zip = new AdmZip(filePath);
+    const entry = zip.getEntry("index.json");
+    if (!entry || entry.isDirectory) return null;
+    return JSON.parse(entry.getData().toString("utf8"));
   } catch (_error) {
     return null;
   }
@@ -2014,7 +2014,7 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   const workDir = path.join(directory, "bundle");
   const outputPath = path.join(directory, fileName);
   await fs.promises.mkdir(workDir, { recursive: true });
-  await execFile("unzip", ["-q", sourceZipPath, "-d", workDir], { timeout: 120000 });
+  extractZipToDirectory(sourceZipPath, workDir);
   await fs.promises.mkdir(path.join(workDir, "capture"), { recursive: true });
   const portableIndexPath = path.join(workDir, "index.json");
   const portableIndex = await readJson(portableIndexPath) || index;
@@ -2044,8 +2044,40 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
     "This download was rebuilt on demand from a reference-mode voyage bundle. Copied raw AJRM Marine Logger files are in capture/ when they were still present on this server.",
   ];
   await writeJson(portableIndexPath, portableIndex);
-  await execFile("zip", ["-qr", outputPath, "."], { cwd: workDir, timeout: 120000 });
+  await writeDirectoryZip(outputPath, workDir);
   return { path: outputPath, directory };
+}
+
+function extractZipToDirectory(filePath, directory) {
+  const zip = new AdmZip(filePath);
+  for (const entry of zip.getEntries()) {
+    if (unsafeZipEntryName(entry.entryName)) {
+      throw new Error(`unsafe archive path: ${entry.entryName}`);
+    }
+  }
+  zip.extractAllTo(directory, true);
+}
+
+function unsafeZipEntryName(entryName) {
+  return path.isAbsolute(entryName) || entryName.split(/[\\/]+/).includes("..");
+}
+
+async function writeDirectoryZip(zipPath, rootDir) {
+  const zip = new AdmZip();
+  async function addDirectory(directory, prefix = "") {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await addDirectory(fullPath, relativePath);
+      } else if (entry.isFile()) {
+        zip.addFile(relativePath, await fs.promises.readFile(fullPath));
+      }
+    }
+  }
+  await addDirectory(rootDir);
+  zip.writeZip(zipPath);
 }
 
 function reconcilePortableCaptureReferences(index, copiedReferences = []) {

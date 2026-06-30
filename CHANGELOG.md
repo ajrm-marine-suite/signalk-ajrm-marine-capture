@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.17
+
+- Replace external `zip`/`unzip` archive operations with pure JavaScript ZIP
+  handling for voyage bundle creation and portable downloads.
+- Remove a hard-coded `/home/pi` path from test fixtures so the Signal K plugin
+  CI package validator passes.
+
 ## 0.5.16
 
 - Add Signal K AppStore relationship metadata for the voyage debug mini-suite:
