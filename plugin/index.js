@@ -23,6 +23,7 @@ const AJRM_MARINE_GPS_INTEGRITY_STATE_PATH = "plugins.ajrmMarineGpsIntegrity.nav
 const AJRM_MARINE_TRAFFIC_TARGETS_PATH = "plugins.ajrmMarineTraffic.targets";
 const AJRM_MARINE_TRAFFIC_PROFILES_PATH = "plugins.ajrmMarineTraffic.profiles";
 const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoProfile";
+const AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH = "plugins.ajrmMarineTraffic.voyageState";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
 const DR_PLOT_FIXES_RELATIVE_PATH = "tracks/dr-plot-fixes.json";
 const DR_PLOTTER_FIXES_FILE = path.join(
@@ -51,6 +52,9 @@ module.exports = function ajrmMarineCapture(app) {
   let snapshotTimer = null;
   let currentVoyage = null;
   let speedKnots = null;
+  let sogKnots = null;
+  let stwKnots = null;
+  let voyageState = null;
   let movingSinceMs = null;
   let stoppedSinceMs = null;
   let autoStartInhibited = false;
@@ -431,8 +435,14 @@ module.exports = function ajrmMarineCapture(app) {
             movementSuppressedUntilFreshSpeed = true;
             return;
           }
-          speedKnots = speedKnotsFromSog(entry.value);
+          sogKnots = speedKnotsFromMps(entry.value);
+          refreshEffectiveSpeedFromMotionSources();
           movementSuppressedUntilFreshSpeed = false;
+        } else if (entry.path === "navigation.speedThroughWater") {
+          stwKnots = speedKnotsFromMps(entry.value);
+          refreshEffectiveSpeedFromMotionSources();
+        } else if (entry.path === AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH) {
+          voyageState = normalizeVoyageState(entry.value);
         } else if (entry.path === AJRM_MARINE_GPS_INTEGRITY_STATE_PATH) {
           appendDrTrackSample(entry.value, update.timestamp || delta.timestamp || new Date().toISOString());
         } else if (entry.path === AJRM_MARINE_TRAFFIC_TARGETS_PATH) {
@@ -557,6 +567,7 @@ module.exports = function ajrmMarineCapture(app) {
     const now = Date.now();
     const movement = nextMovementGateState({
       speedKnots,
+      voyageState,
       movementSpeedKnots: options.movementSpeedKnots,
       now,
       movingSinceMs,
@@ -592,7 +603,14 @@ module.exports = function ajrmMarineCapture(app) {
   function refreshSpeedFromSelfPath() {
     if (typeof app.getSelfPath !== "function") return;
     if (loggerPlaybackActive || movementSuppressedUntilFreshSpeed) return;
-    speedKnots = speedKnotsFromSog(app.getSelfPath("navigation.speedOverGround"));
+    sogKnots = speedKnotsFromMps(app.getSelfPath("navigation.speedOverGround"));
+    stwKnots = speedKnotsFromMps(app.getSelfPath("navigation.speedThroughWater"));
+    voyageState = normalizeVoyageState(app.getSelfPath(AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH)) || voyageState;
+    refreshEffectiveSpeedFromMotionSources();
+  }
+
+  function refreshEffectiveSpeedFromMotionSources() {
+    speedKnots = maxFinite(sogKnots, stwKnots);
   }
 
   async function startVoyage(reason) {
@@ -1312,6 +1330,9 @@ module.exports = function ajrmMarineCapture(app) {
       enabled: options.enabled,
       state: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled",
       speedKnots,
+      sogKnots,
+      stwKnots,
+      voyageState,
       loggerPlaybackActive,
       movementSuppressedUntilFreshSpeed,
       autoStartInhibited,
@@ -1362,6 +1383,9 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.enabled", value: options.enabled },
       { path: "plugins.ajrmMarineCapture.state", value: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled" },
       { path: "plugins.ajrmMarineCapture.speedKnots", value: speedKnots },
+      { path: "plugins.ajrmMarineCapture.sogKnots", value: sogKnots },
+      { path: "plugins.ajrmMarineCapture.stwKnots", value: stwKnots },
+      { path: "plugins.ajrmMarineCapture.voyageState", value: voyageState },
       { path: "plugins.ajrmMarineCapture.loggerPlaybackActive", value: loggerPlaybackActive },
       { path: "plugins.ajrmMarineCapture.movementSuppressedUntilFreshSpeed", value: movementSuppressedUntilFreshSpeed },
       { path: "plugins.ajrmMarineCapture.autoStartInhibited", value: autoStartInhibited },
@@ -2258,7 +2282,7 @@ function unwrapValue(value) {
   return value;
 }
 
-function speedKnotsFromSog(value) {
+function speedKnotsFromMps(value) {
   const unwrapped = unwrapValue(value);
   if (unwrapped === null || unwrapped === undefined || unwrapped === "") return null;
   const number = Number(unwrapped);
@@ -2267,6 +2291,7 @@ function speedKnotsFromSog(value) {
 
 function nextMovementGateState({
   speedKnots,
+  voyageState,
   movementSpeedKnots,
   now,
   movingSinceMs,
@@ -2282,7 +2307,12 @@ function nextMovementGateState({
       autoStartInhibited: autoStartInhibited === true,
     };
   }
-  const moving = Number(speedKnots) >= Number(movementSpeedKnots);
+  const moving =
+    voyageState?.motion === "moving"
+      ? true
+      : voyageState?.motion === "stationary"
+        ? false
+        : Number(speedKnots) >= Number(movementSpeedKnots);
   if (moving) {
     return {
       moving,
@@ -2297,6 +2327,37 @@ function nextMovementGateState({
     stoppedSinceMs: stoppedSinceMs || now,
     autoStartInhibited: false,
   };
+}
+
+function normalizeVoyageState(value) {
+  const unwrapped = unwrapValue(value);
+  if (!unwrapped || typeof unwrapped !== "object") return null;
+  const onPassage =
+    typeof unwrapped.onPassage === "boolean" ? unwrapped.onPassage : null;
+  const motion = ["moving", "stationary", "unknown"].includes(unwrapped.motion)
+    ? unwrapped.motion
+    : onPassage === true
+      ? "moving"
+      : onPassage === false
+        ? "stationary"
+        : "unknown";
+  return {
+    contract: String(unwrapped.contract || ""),
+    onPassage,
+    motion,
+    source: String(unwrapped.source || "unknown"),
+    sogMps: numberOrNull(unwrapped.sogMps),
+    stwMps: numberOrNull(unwrapped.stwMps),
+    effectiveSpeedMps: numberOrNull(unwrapped.effectiveSpeedMps),
+    navigationState: unwrapped.navigationState || null,
+    generatedAt: unwrapped.generatedAt || null,
+  };
+}
+
+function maxFinite(...values) {
+  const numbers = values.filter((value) => Number.isFinite(value));
+  if (!numbers.length) return null;
+  return Math.max(...numbers);
 }
 
 function resetMovementGateForVoyageStart() {
@@ -2411,5 +2472,5 @@ module.exports._private = {
   reconcilePortableCaptureReferences,
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,
-  speedKnotsFromSog,
+  speedKnotsFromMps,
 };

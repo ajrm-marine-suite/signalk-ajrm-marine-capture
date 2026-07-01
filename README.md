@@ -8,6 +8,11 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+Version `0.5.18` uses AJRM Marine Traffic's `voyageState` projection plus both
+speed over ground and speed through water when deciding whether automatic
+voyage recording should start or stop. This avoids treating lost GPS/SOG as
+proof that the vessel is stationary.
+
 Version `0.5.12` copies AJRM Marine DR Plotter's persisted navigator plot fixes
 into voyage bundles as `tracks/dr-plot-fixes.json`, filtered to the voyage time
 range and referenced from `index.json`.

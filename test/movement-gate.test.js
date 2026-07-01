@@ -8,6 +8,7 @@ const {
   nextMovementGateState,
   normalizeTrafficProfile,
   resetMovementGateForVoyageStart,
+  speedKnotsFromMps,
 } = createPlugin._private;
 
 test("default voyage comment names the harbour and weekday", () => {
@@ -108,6 +109,42 @@ test("logger playback suppression prevents movement autostart", () => {
   assert.equal(suppressed.movingSinceMs, null);
   assert.equal(suppressed.stoppedSinceMs, 1000);
   assert.equal(suppressed.autoStartInhibited, false);
+});
+
+test("movement gate uses Traffic voyage state when GPS SOG is unavailable", () => {
+  const movingFromTraffic = nextMovementGateState({
+    speedKnots: null,
+    voyageState: { motion: "moving", source: "stw" },
+    movementSpeedKnots: 0.68,
+    now: 1000,
+    movingSinceMs: null,
+    stoppedSinceMs: null,
+    autoStartInhibited: false,
+  });
+
+  assert.equal(movingFromTraffic.moving, true);
+  assert.equal(movingFromTraffic.movingSinceMs, 1000);
+  assert.equal(movingFromTraffic.stoppedSinceMs, null);
+
+  const stationaryFromTraffic = nextMovementGateState({
+    speedKnots: 4,
+    voyageState: { motion: "stationary", source: "navigation.state" },
+    movementSpeedKnots: 0.68,
+    now: 2000,
+    movingSinceMs: movingFromTraffic.movingSinceMs,
+    stoppedSinceMs: movingFromTraffic.stoppedSinceMs,
+    autoStartInhibited: movingFromTraffic.autoStartInhibited,
+  });
+
+  assert.equal(stationaryFromTraffic.moving, false);
+  assert.equal(stationaryFromTraffic.stoppedSinceMs, 2000);
+});
+
+test("speed conversion accepts Signal K meters per second values", () => {
+  assert.equal(speedKnotsFromMps(null), null);
+  assert.equal(speedKnotsFromMps(""), null);
+  assert.equal(Math.round(speedKnotsFromMps(0.514444) * 10) / 10, 1);
+  assert.equal(speedKnotsFromMps(-1), 0);
 });
 
 test("voyage start clears stale stopped timer from before the voyage", () => {

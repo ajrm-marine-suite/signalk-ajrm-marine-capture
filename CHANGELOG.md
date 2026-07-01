@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.18
+
+- Consume AJRM Marine Traffic's `voyageState` projection when deciding whether
+  automatic voyage recording should start or stop.
+- Track both SOG and STW for movement detection so Capture can continue to
+  recognise passage state when GPS/SOG is unavailable.
+
 ## 0.5.17
 
 - Replace external `zip`/`unzip` archive operations with pure JavaScript ZIP
