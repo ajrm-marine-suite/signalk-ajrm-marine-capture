@@ -19,6 +19,8 @@ test("Capture exposes an in-process API for Console BITE orchestration", () => {
   assert.match(source, /exposeCaptureApi\(\)/);
   assert.match(source, /app\.ajrmMarineCaptureApi = api/);
   assert.match(source, /globalThis\[AJRM_MARINE_CAPTURE_API_REGISTRY\] = api/);
+  assert.match(source, /async setAutomaticRecordingEnabled\(enabled\)/);
+  assert.match(source, /await setAutomaticRecordingEnabled\(enabled\)/);
   assert.match(source, /async start\(\{ comment, reason = "BITE run all" \} = \{\}\)/);
   assert.match(source, /async stop\(\{ reason = "BITE run all complete"/);
   assert.match(source, /await setVoyageComment\(comment\)/);

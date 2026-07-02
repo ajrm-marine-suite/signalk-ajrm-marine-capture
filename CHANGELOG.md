@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.22
+
+- Expose automatic voyage-recording control through the in-process Capture API
+  so AJRM Marine Console BITE can pause and restore auto recording around a
+  controlled manual test capture.
+
 ## 0.5.21
 
 - When AJRM Marine Console BITE Run all starts Capture while a voyage is

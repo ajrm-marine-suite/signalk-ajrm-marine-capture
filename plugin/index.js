@@ -309,12 +309,8 @@ module.exports = function ajrmMarineCapture(app) {
     });
 
     router.post("/settings", async (req, res) => {
-      const enabled = req.body?.enabled === true;
       try {
-        await persistPluginConfiguration({ enabled });
-        options.enabled = enabled;
-        addEvent("settings", `Automatic voyage recording ${options.enabled ? "enabled" : "disabled"}`);
-        publishState();
+        await setAutomaticRecordingEnabled(req.body?.enabled === true);
         res.json({ ok: true, enabled: options.enabled });
       } catch (error) {
         logError("settings save failed", error);
@@ -627,6 +623,10 @@ module.exports = function ajrmMarineCapture(app) {
       async status() {
         return buildStatus();
       },
+      async setAutomaticRecordingEnabled(enabled) {
+        await setAutomaticRecordingEnabled(enabled);
+        return buildStatus();
+      },
       async start({ comment, reason = "BITE run all" } = {}) {
         if (comment !== undefined) await setVoyageComment(comment);
         return startVoyage(reason);
@@ -637,6 +637,14 @@ module.exports = function ajrmMarineCapture(app) {
     };
     app.ajrmMarineCaptureApi = api;
     globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY] = api;
+  }
+
+  async function setAutomaticRecordingEnabled(enabled) {
+    const nextEnabled = enabled === true;
+    await persistPluginConfiguration({ enabled: nextEnabled });
+    options.enabled = nextEnabled;
+    addEvent("settings", `Automatic voyage recording ${options.enabled ? "enabled" : "disabled"}`);
+    publishState();
   }
 
   async function startVoyage(reason) {
