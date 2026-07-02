@@ -33,6 +33,13 @@ const DR_PLOTTER_FIXES_FILE = path.join(
   "signalk-ajrm-marine-dr-plotter",
   "plot-fixes.json",
 );
+const CONSOLE_BITE_REPORTS_DIRECTORY = path.join(
+  os.homedir(),
+  ".signalk",
+  "plugin-config-data",
+  "signalk-ajrm-marine-console",
+  "bite-reports",
+);
 const DEFAULT_LOG_DIRECTORY = "~/AJRMMarineLogs";
 const DEFAULT_VOYAGE_DIRECTORY = `${DEFAULT_LOG_DIRECTORY}/voyages`;
 const LEGACY_LOG_DIRECTORY = ["~/Capture", "PlusLogs"].join("");
@@ -704,6 +711,7 @@ module.exports = function ajrmMarineCapture(app) {
       voyage.stopReason = reason;
       await closeDrTrack(voyage, stoppedAt);
       await copyDrPlotFixes(voyage);
+      await copyConsoleBiteReports(voyage);
       await copyCaptureFiles(voyage, captureStop);
       const index = await writeVoyageIndex(voyage);
       const bundle = await bundleVoyage(voyage, index);
@@ -791,6 +799,7 @@ module.exports = function ajrmMarineCapture(app) {
       );
     }
     await copyDrPlotFixes(voyage);
+    await copyConsoleBiteReports(voyage);
     await writeJson(path.join(directory, "system", "recovery-status.json"), {
       ok: true,
       recoveredAt: now,
@@ -1615,6 +1624,50 @@ module.exports = function ajrmMarineCapture(app) {
       voyage,
       "dr-plot-fixes",
       `${voyageFixes.length} AJRM Marine DR Plotter fix${voyageFixes.length === 1 ? "" : "es"} copied into voyage bundle`,
+    );
+  }
+
+  async function copyConsoleBiteReports(voyage) {
+    if (!voyage?.directory) return;
+    const targetDirectory = path.join(voyage.directory, "system", "bite-reports");
+    const copied = [];
+    let names = [];
+    try {
+      names = (await fs.promises.readdir(CONSOLE_BITE_REPORTS_DIRECTORY))
+        .filter((name) => name.endsWith(".json"))
+        .sort()
+        .slice(-20);
+    } catch (_error) {
+      voyage.biteReports = {
+        sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,
+        copied: 0,
+        available: false,
+      };
+      appendVoyageEvent(voyage, "bite-reports-missing", "No AJRM Marine Console BITE reports were available");
+      return;
+    }
+    await fs.promises.mkdir(targetDirectory, { recursive: true });
+    for (const name of names) {
+      const source = path.join(CONSOLE_BITE_REPORTS_DIRECTORY, name);
+      const target = path.join(targetDirectory, name);
+      try {
+        await fs.promises.copyFile(source, target);
+        copied.push(name);
+      } catch (error) {
+        appendVoyageEvent(voyage, "bite-report-copy-warning", `${name}: ${error.message}`);
+      }
+    }
+    voyage.biteReports = {
+      sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,
+      directory: "system/bite-reports",
+      copied: copied.length,
+      files: copied,
+      available: true,
+    };
+    appendVoyageEvent(
+      voyage,
+      "bite-reports",
+      `${copied.length} AJRM Marine Console BITE report${copied.length === 1 ? "" : "s"} copied into voyage bundle`,
     );
   }
 };

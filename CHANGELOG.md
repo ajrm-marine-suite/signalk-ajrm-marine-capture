@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.19
+
+- Copy recent AJRM Marine Console BITE report JSON files into voyage bundles
+  under `system/bite-reports/`, so Capture downloads include suite health-test
+  evidence for offline debugging.
+
 ## 0.5.18
 
 - Consume AJRM Marine Traffic's `voyageState` projection when deciding whether
