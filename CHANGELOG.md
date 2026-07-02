@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.21
+
+- When AJRM Marine Console BITE Run all starts Capture while a voyage is
+  already active, update the active voyage comment to the explicit BITE comment
+  instead of leaving the automatic harbour departure comment in the bundle.
+- Share the same comment-update helper between the web API and the in-process
+  BITE API, and avoid clearing comments when a caller starts Capture without
+  supplying one.
+
 ## 0.5.20
 
 - Expose a small in-process Capture API so AJRM Marine Console BITE Run all can

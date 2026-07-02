@@ -337,13 +337,7 @@ module.exports = function ajrmMarineCapture(app) {
     router.post("/voyage/comment", async (req, res) => {
       try {
         const comment = normalizeComment(req.body?.comment);
-        if (currentVoyage) {
-          currentVoyage.comment = comment;
-          addVoyageEvent("comment", comment ? "Voyage comment updated" : "Voyage comment cleared");
-          await writeVoyageIndex(currentVoyage);
-        } else {
-          nextVoyageComment = comment;
-        }
+        await setVoyageComment(comment);
         addEvent("comment", comment ? "Voyage comment saved" : "Voyage comment cleared");
         publishState();
         res.json({ ok: true, comment });
@@ -633,8 +627,8 @@ module.exports = function ajrmMarineCapture(app) {
       async status() {
         return buildStatus();
       },
-      async start({ comment = "", reason = "BITE run all" } = {}) {
-        if (comment !== undefined) nextVoyageComment = normalizeComment(comment);
+      async start({ comment, reason = "BITE run all" } = {}) {
+        if (comment !== undefined) await setVoyageComment(comment);
         return startVoyage(reason);
       },
       async stop({ reason = "BITE run all complete" } = {}) {
@@ -715,6 +709,19 @@ module.exports = function ajrmMarineCapture(app) {
     await writeVoyageIndex(currentVoyage);
     publishState();
     return summarizeVoyage(currentVoyage);
+  }
+
+  async function setVoyageComment(value) {
+    const comment = normalizeComment(value);
+    if (currentVoyage) {
+      if (currentVoyage.comment === comment) return comment;
+      currentVoyage.comment = comment;
+      addVoyageEvent("comment", comment ? "Voyage comment updated" : "Voyage comment cleared");
+      await writeVoyageIndex(currentVoyage);
+    } else {
+      nextVoyageComment = comment;
+    }
+    return comment;
   }
 
   async function stopVoyage(reason) {
