@@ -16,6 +16,7 @@ const ENGINE_STATIONARY_THRESHOLD_KNOTS =
   ENGINE_STATIONARY_THRESHOLD_MPS * MPS_TO_KNOTS;
 const AJRM_MARINE_LOGGER_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineLoggerApi");
 const AJRM_MARINE_SNAPSHOT_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineSnapshotApi");
+const AJRM_MARINE_CAPTURE_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineCaptureApi");
 const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
 const CAPTURE_FILE_MODES = new Set(["portable", "reference"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
@@ -199,6 +200,7 @@ module.exports = function ajrmMarineCapture(app) {
     notificationSessionId = randomUUID();
     notificationSequence = 0;
     ensureDirectories();
+    exposeCaptureApi();
     closeIncompleteVoyagesOnStartup().catch((error) =>
       logError("startup voyage recovery failed", error),
     );
@@ -229,6 +231,10 @@ module.exports = function ajrmMarineCapture(app) {
     if (currentVoyage) {
       stopVoyage("plugin stopped").catch((error) => logError("stop voyage failed", error));
     }
+    if (globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY]?.pluginId === plugin.id) {
+      delete globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY];
+    }
+    if (app.ajrmMarineCaptureApi?.pluginId === plugin.id) delete app.ajrmMarineCaptureApi;
   };
 
   plugin.registerWithRouter = function registerWithRouter(router) {
@@ -618,6 +624,25 @@ module.exports = function ajrmMarineCapture(app) {
 
   function refreshEffectiveSpeedFromMotionSources() {
     speedKnots = maxFinite(sogKnots, stwKnots);
+  }
+
+  function exposeCaptureApi() {
+    const api = {
+      pluginId: plugin.id,
+      version: packageInfo.version,
+      async status() {
+        return buildStatus();
+      },
+      async start({ comment = "", reason = "BITE run all" } = {}) {
+        if (comment !== undefined) nextVoyageComment = normalizeComment(comment);
+        return startVoyage(reason);
+      },
+      async stop({ reason = "BITE run all complete" } = {}) {
+        return stopVoyage(reason);
+      },
+    };
+    app.ajrmMarineCaptureApi = api;
+    globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY] = api;
   }
 
   async function startVoyage(reason) {

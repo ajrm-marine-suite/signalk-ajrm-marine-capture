@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.20
+
+- Expose a small in-process Capture API so AJRM Marine Console BITE Run all can
+  start a BITE-labelled voyage, run tests, and stop Capture without relying on
+  browser/session authentication.
+
 ## 0.5.19
 
 - Copy recent AJRM Marine Console BITE report JSON files into voyage bundles

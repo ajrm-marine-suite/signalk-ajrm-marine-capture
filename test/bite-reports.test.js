@@ -13,3 +13,12 @@ test("Capture bundles Console BITE reports for offline debugging", () => {
   assert.match(source, /await copyConsoleBiteReports\(voyage\);/);
   assert.match(source, /biteReports = \{/);
 });
+
+test("Capture exposes an in-process API for Console BITE orchestration", () => {
+  assert.match(source, /AJRM_MARINE_CAPTURE_API_REGISTRY/);
+  assert.match(source, /exposeCaptureApi\(\)/);
+  assert.match(source, /app\.ajrmMarineCaptureApi = api/);
+  assert.match(source, /globalThis\[AJRM_MARINE_CAPTURE_API_REGISTRY\] = api/);
+  assert.match(source, /async start\(\{ comment = ""/);
+  assert.match(source, /async stop\(\{ reason = "BITE run all complete"/);
+});
