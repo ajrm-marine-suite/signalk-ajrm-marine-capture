@@ -1,6 +1,6 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "description": "Voyage capture and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
@@ -20,7 +20,7 @@
     "navigation"
   ],
   "author": "Anthony McDonald, with assistance from William McAusland",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git"
