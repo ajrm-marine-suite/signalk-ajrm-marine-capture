@@ -23,6 +23,8 @@ test("Capture exposes an in-process API for Console BITE orchestration", () => {
   assert.match(source, /await setAutomaticRecordingEnabled\(enabled\)/);
   assert.match(source, /async start\(\{ comment, reason = "BITE run all" \} = \{\}\)/);
   assert.match(source, /async stop\(\{ reason = "BITE run all complete"/);
+  assert.match(source, /async prepareVoyageDownload\(fileName\)/);
+  assert.match(source, /return prepareVoyageDownload\(fileName\)/);
   assert.match(source, /await setVoyageComment\(comment\)/);
   assert.match(source, /async function setVoyageComment\(value\)/);
   assert.match(source, /currentVoyage\.comment = comment/);

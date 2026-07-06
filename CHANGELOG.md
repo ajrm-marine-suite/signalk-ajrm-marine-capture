@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.24
+
+- Expose Capture's portable voyage download builder through the in-process API
+  so AJRM Marine Voyage Viewer and Logger can use the same canonical bundle
+  collation routine.
+- Route Capture's own download endpoint through the shared preparation helper
+  to keep browser and in-process downloads identical.
+
 ## 0.5.22
 
 - Expose automatic voyage-recording control through the in-process Capture API

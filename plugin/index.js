@@ -256,26 +256,14 @@ module.exports = function ajrmMarineCapture(app) {
     });
 
     router.get("/voyages/:file/download", async (req, res) => {
-      let temporaryBundle = null;
+      let download = null;
       try {
-        const fileName = safeBaseName(req.params.file);
-        const filePath = path.join(options.voyageDirectory, fileName);
-        const info = await fs.promises.stat(filePath);
-        if (!info.isFile() || !fileName.endsWith(".zip")) {
-          res.status(404).json({ ok: false, error: "Voyage bundle not found" });
-          return;
-        }
-        temporaryBundle = await buildPortableDownloadBundle(filePath, fileName);
-        const downloadPath = temporaryBundle?.path || filePath;
-        res.download(downloadPath, fileName, () => {
-          if (temporaryBundle?.directory) {
-            fs.promises.rm(temporaryBundle.directory, { recursive: true, force: true }).catch(() => {});
-          }
+        download = await prepareVoyageDownload(req.params.file);
+        res.download(download.path, download.fileName, () => {
+          download.cleanup().catch(() => {});
         });
       } catch (error) {
-        if (temporaryBundle?.directory) {
-          fs.promises.rm(temporaryBundle.directory, { recursive: true, force: true }).catch(() => {});
-        }
+        if (download) download.cleanup().catch(() => {});
         res.status(404).json({ ok: false, error: "Voyage bundle not found" });
       }
     });
@@ -634,9 +622,32 @@ module.exports = function ajrmMarineCapture(app) {
       async stop({ reason = "BITE run all complete" } = {}) {
         return stopVoyage(reason);
       },
+      async prepareVoyageDownload(fileName) {
+        return prepareVoyageDownload(fileName);
+      },
     };
     app.ajrmMarineCaptureApi = api;
     globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY] = api;
+  }
+
+  async function prepareVoyageDownload(fileNameValue) {
+    const fileName = safeBaseName(fileNameValue);
+    const filePath = path.join(options.voyageDirectory, fileName);
+    const info = await fs.promises.stat(filePath);
+    if (!info.isFile() || !fileName.endsWith(".zip")) {
+      throw new Error("Voyage bundle not found");
+    }
+    const temporaryBundle = await buildPortableDownloadBundle(filePath, fileName);
+    return {
+      fileName,
+      path: temporaryBundle?.path || filePath,
+      temporaryBundle,
+      async cleanup() {
+        if (temporaryBundle?.directory) {
+          await fs.promises.rm(temporaryBundle.directory, { recursive: true, force: true }).catch(() => {});
+        }
+      },
+    };
   }
 
   async function setAutomaticRecordingEnabled(enabled) {
