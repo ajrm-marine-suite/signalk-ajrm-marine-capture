@@ -12,6 +12,7 @@ test("Capture bundles Console BITE reports for offline debugging", () => {
   assert.match(source, /system", "bite-reports"/);
   assert.match(source, /await copyConsoleBiteReports\(voyage\);/);
   assert.match(source, /biteReports = \{/);
+  assert.match(source, /\.slice\(-200\)/);
 });
 
 test("Capture exposes an in-process API for Console BITE orchestration", () => {

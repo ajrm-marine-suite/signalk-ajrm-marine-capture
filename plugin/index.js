@@ -1687,7 +1687,7 @@ module.exports = function ajrmMarineCapture(app) {
       names = (await fs.promises.readdir(CONSOLE_BITE_REPORTS_DIRECTORY))
         .filter((name) => name.endsWith(".json"))
         .sort()
-        .slice(-20);
+        .slice(-200);
     } catch (_error) {
       voyage.biteReports = {
         sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,

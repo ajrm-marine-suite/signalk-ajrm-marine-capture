@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.25
+
+- Include up to 200 AJRM Marine Console BITE report JSON files in voyage
+  bundles so a full-suite BITE run is not truncated to only the last few tests.
+
 ## 0.5.24
 
 - Expose Capture's portable voyage download builder through the in-process API
