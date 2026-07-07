@@ -29,15 +29,18 @@ const elements = {
 };
 
 let selectedBundle = null;
+let pendingRecorderAction = null;
+let latestStatus = null;
 
 elements.refreshButton.addEventListener("click", refresh);
 elements.enabledToggle.addEventListener("change", () =>
   command("/settings", { enabled: elements.enabledToggle.checked }),
 );
-elements.startButton.addEventListener("click", () =>
-  command("/voyage/start", { manual: true, comment: elements.commentInput.value }),
-);
-elements.stopButton.addEventListener("click", () => command("/voyage/stop", { manual: true }));
+elements.startButton.addEventListener("click", () => recorderCommand("start", "/voyage/start", {
+  manual: true,
+  comment: elements.commentInput.value,
+}));
+elements.stopButton.addEventListener("click", () => recorderCommand("stop", "/voyage/stop", { manual: true }));
 elements.saveCommentButton.addEventListener("click", () =>
   command("/voyage/comment", { comment: elements.commentInput.value }),
 );
@@ -60,6 +63,7 @@ async function refresh() {
     const response = await fetch(`${API}/status`, { cache: "no-store" });
     const status = await response.json();
     if (!response.ok || !status.ok) throw new Error(status.error || "Status failed");
+    latestStatus = status;
     render(status);
   } catch (error) {
     elements.banner.textContent = error.message || String(error);
@@ -69,17 +73,35 @@ async function refresh() {
 
 async function command(path, body) {
   elements.banner.textContent = "Working...";
-  const response = await fetch(`${API}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || !result.ok) {
-    elements.banner.textContent = result.error || "Command failed";
-    return;
+  elements.banner.classList.remove("error");
+  try {
+    const response = await fetch(`${API}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || `Command failed: HTTP ${response.status}`);
+    }
+    await refresh();
+    return true;
+  } catch (error) {
+    elements.banner.textContent = error.message || "Command failed";
+    elements.banner.classList.add("error");
+    return false;
   }
-  await refresh();
+}
+
+async function recorderCommand(action, path, body) {
+  pendingRecorderAction = action;
+  renderRecorderButtons({ currentVoyage: action === "stop" ? true : null });
+  try {
+    await command(path, body);
+  } finally {
+    pendingRecorderAction = null;
+    renderRecorderButtons(latestStatus || {});
+  }
 }
 
 function render(status) {
@@ -118,8 +140,15 @@ function render(status) {
     .map((event) => `<li><strong>${escapeHtml(formatTime(event.at))}</strong> ${escapeHtml(event.type)} — ${escapeHtml(event.message)}</li>`)
     .join("");
   renderVoyageBundles(status.voyages || []);
-  elements.startButton.disabled = Boolean(status.currentVoyage);
-  elements.stopButton.disabled = !status.currentVoyage;
+  renderRecorderButtons(status);
+}
+
+function renderRecorderButtons(status) {
+  const activeVoyage = status.currentVoyage === null ? null : Boolean(status.currentVoyage);
+  elements.startButton.disabled = pendingRecorderAction === "start" || pendingRecorderAction === "stop" || activeVoyage === true;
+  elements.stopButton.disabled = pendingRecorderAction === "start" || pendingRecorderAction === "stop" || activeVoyage === false;
+  elements.startButton.textContent = pendingRecorderAction === "start" ? "Starting..." : "Start now";
+  elements.stopButton.textContent = pendingRecorderAction === "stop" ? "Stopping..." : "Stop now";
 }
 
 function titleCase(value) {

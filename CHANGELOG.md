@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.27
+
+- Disable the Start/Stop recorder buttons immediately while manual start/stop
+  commands are in progress, and change the button labels to Starting/Stopping
+  so the skipper can see the press was accepted.
+- Keep command errors visible while clearing the pending button state, instead
+  of hiding them behind an immediate status refresh.
+
 ## 0.5.26
 
 - On startup recovery, rediscover AJRM Marine Logger segments for the recovered
