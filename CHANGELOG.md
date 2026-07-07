@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.26
+
+- On startup recovery, rediscover AJRM Marine Logger segments for the recovered
+  voyage window instead of preserving only the initial segment reference.
+- Copy only AJRM Marine Console BITE reports that overlap the voyage window, so
+  later soak/real voyages do not inherit stale BITE reports from earlier tests.
+
 ## 0.5.25
 
 - Include up to 200 AJRM Marine Console BITE report JSON files in voyage

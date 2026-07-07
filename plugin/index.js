@@ -842,11 +842,12 @@ module.exports = function ajrmMarineCapture(app) {
       interruptedByRestart: true,
     };
     appendVoyageEvent(voyage, "recovered", "Voyage closed at startup after Signal K restart");
+    await copyCaptureFiles(voyage, voyage.captureStop);
     if (!voyage.captureFiles.length && !voyage.captureReferences.length) {
       appendVoyageEvent(
         voyage,
         "capture-reference-warning",
-        "No copied AJRM Marine Logger files were present in the interrupted voyage directory",
+        "No AJRM Marine Logger segments matched the recovered voyage range",
       );
     }
     await copyDrPlotFixes(voyage);
@@ -1686,8 +1687,7 @@ module.exports = function ajrmMarineCapture(app) {
     try {
       names = (await fs.promises.readdir(CONSOLE_BITE_REPORTS_DIRECTORY))
         .filter((name) => name.endsWith(".json"))
-        .sort()
-        .slice(-200);
+        .sort();
     } catch (_error) {
       voyage.biteReports = {
         sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,
@@ -1702,11 +1702,23 @@ module.exports = function ajrmMarineCapture(app) {
       const source = path.join(CONSOLE_BITE_REPORTS_DIRECTORY, name);
       const target = path.join(targetDirectory, name);
       try {
+        const report = await readJson(source);
+        if (!biteReportOverlapsVoyage(voyage, report, name)) continue;
         await fs.promises.copyFile(source, target);
         copied.push(name);
       } catch (error) {
         appendVoyageEvent(voyage, "bite-report-copy-warning", `${name}: ${error.message}`);
       }
+      if (copied.length >= 200) break;
+    }
+    if (!copied.length) {
+      voyage.biteReports = {
+        sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,
+        copied: 0,
+        available: false,
+      };
+      appendVoyageEvent(voyage, "bite-reports-none", "No AJRM Marine Console BITE reports overlapped this voyage");
+      return;
     }
     voyage.biteReports = {
       sourceDirectory: CONSOLE_BITE_REPORTS_DIRECTORY,
@@ -1733,6 +1745,40 @@ function filterDrPlotFixesForVoyage(plotFixes, startedAt, stoppedAt) {
     if (Number.isFinite(stopMs) && timestampMs > stopMs) return false;
     return true;
   });
+}
+
+function biteReportOverlapsVoyage(voyage, report, fileName = "") {
+  const startMs = Date.parse(voyage?.startedAt || "");
+  const stopMs = Date.parse(voyage?.stoppedAt || "");
+  if (!Number.isFinite(startMs) || !Number.isFinite(stopMs)) return false;
+  const reportStarted = Date.parse(report?.startedAt || report?.createdAt || reportTimestampFromFileName(fileName) || "");
+  const reportFinished = Date.parse(report?.finishedAt || report?.completedAt || report?.stoppedAt || "");
+  const childTimes = Array.isArray(report?.reports)
+    ? report.reports.flatMap((child) => [
+      Date.parse(child?.startedAt || ""),
+      Date.parse(child?.finishedAt || ""),
+    ]).filter(Number.isFinite)
+    : [];
+  const fromMs = Number.isFinite(reportStarted)
+    ? reportStarted
+    : childTimes.length
+      ? Math.min(...childTimes)
+      : NaN;
+  const toMs = Number.isFinite(reportFinished)
+    ? reportFinished
+    : childTimes.length
+      ? Math.max(...childTimes)
+      : fromMs;
+  if (!Number.isFinite(fromMs)) return false;
+  const effectiveToMs = Number.isFinite(toMs) ? toMs : fromMs;
+  return effectiveToMs >= startMs && fromMs <= stopMs;
+}
+
+function reportTimestampFromFileName(fileName) {
+  const match = String(fileName || "").match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z/);
+  if (!match) return "";
+  const [, year, month, day, hour, minute, second, ms] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}Z`;
 }
 
 function normalizeDrPlotFixes(value) {
@@ -2567,6 +2613,7 @@ function safeBaseName(value) {
 }
 
 module.exports._private = {
+  biteReportOverlapsVoyage,
   cleanHarbourName,
   defaultVoyageComment,
   filterDrPlotFixesForVoyage,
