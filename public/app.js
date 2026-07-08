@@ -30,6 +30,7 @@ const elements = {
 
 let selectedBundle = null;
 let pendingRecorderAction = null;
+let recorderActionLatch = null;
 let latestStatus = null;
 
 elements.refreshButton.addEventListener("click", refresh);
@@ -97,7 +98,8 @@ async function recorderCommand(action, path, body) {
   pendingRecorderAction = action;
   renderRecorderButtons({ currentVoyage: action === "stop" ? true : null });
   try {
-    await command(path, body);
+    const ok = await command(path, body);
+    recorderActionLatch = ok ? action : null;
   } finally {
     pendingRecorderAction = null;
     renderRecorderButtons(latestStatus || {});
@@ -145,8 +147,11 @@ function render(status) {
 
 function renderRecorderButtons(status) {
   const activeVoyage = status.currentVoyage === null ? null : Boolean(status.currentVoyage);
-  elements.startButton.disabled = pendingRecorderAction === "start" || pendingRecorderAction === "stop" || activeVoyage === true;
-  elements.stopButton.disabled = pendingRecorderAction === "start" || pendingRecorderAction === "stop" || activeVoyage === false;
+  if (recorderActionLatch === "start" && activeVoyage === true) recorderActionLatch = null;
+  if (recorderActionLatch === "stop" && activeVoyage === false) recorderActionLatch = null;
+  const busy = pendingRecorderAction === "start" || pendingRecorderAction === "stop";
+  elements.startButton.disabled = busy || recorderActionLatch === "start" || activeVoyage === true;
+  elements.stopButton.disabled = busy || recorderActionLatch === "stop" || activeVoyage === false;
   elements.startButton.textContent = pendingRecorderAction === "start" ? "Starting..." : "Start now";
   elements.stopButton.textContent = pendingRecorderAction === "stop" ? "Stopping..." : "Stop now";
 }

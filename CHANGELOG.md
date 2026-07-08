@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.28
+
+- Keep Start now and Stop now latched disabled after a successful manual
+  recorder command until status confirms the voyage has actually started or
+  stopped, preventing duplicate start/stop presses against stale status.
+
 ## 0.5.27
 
 - Disable the Start/Stop recorder buttons immediately while manual start/stop
