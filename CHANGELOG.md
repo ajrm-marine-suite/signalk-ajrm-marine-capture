@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.29
+
+- Rename Capture review diagnostics from legacy Engine wording to Traffic
+  projection wording.
+
 ## 0.5.28
 
 - Keep Start now and Stop now latched disabled after a successful manual

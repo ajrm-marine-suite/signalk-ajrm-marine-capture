@@ -84,8 +84,8 @@ Version `0.1.12` publishes voyage start/stop notifications as explicit
 low-priority, non-preempting Notifications Plus events with short audio expiry
 so they cannot interrupt or trail behind collision alerts.
 
-Version `0.1.11` separates harmless Engine projection file-order rewinds caused
-by AJRM Marine Logger backfill/overlap from true Engine sequence regressions in
+Version `0.1.11` separates harmless Traffic projection file-order rewinds caused
+by AJRM Marine Logger backfill/overlap from true Traffic projection sequence regressions in
 `index.json`.
 
 Version `0.1.10` adds capture-order indexing to voyage bundles so backfilled

@@ -118,7 +118,7 @@ module.exports = function ajrmMarineCapture(app) {
         type: "number",
         title: "Movement speed threshold knots",
         description:
-          "Defaults to the Traffic Core/Engine stationary automute threshold of 0.35 m/s, shown here as knots.",
+          "Defaults to the Traffic stationary automute threshold of 0.35 m/s, shown here as knots.",
         default: Number(ENGINE_STATIONARY_THRESHOLD_KNOTS.toFixed(2)),
         minimum: 0.1,
       },
@@ -1183,8 +1183,8 @@ module.exports = function ajrmMarineCapture(app) {
       contexts: {},
       sources: {},
       paths: {},
-      engineSessions: {},
-      engineSequence: {},
+      trafficProjectionSessions: {},
+      trafficProjectionSequence: {},
       sampleTimeline: [],
     };
     if (!fs.existsSync(filePath)) {
@@ -1231,7 +1231,7 @@ module.exports = function ajrmMarineCapture(app) {
         for (const value of update.values || []) {
           const valuePath = value.path;
           increment(summary.paths, valuePath);
-          indexEngineProjection(summary, valuePath, value.value);
+          indexTrafficProjectionSequence(summary, valuePath, value.value);
         }
       }
     }
@@ -1269,23 +1269,23 @@ module.exports = function ajrmMarineCapture(app) {
     );
   }
 
-  function engineSequenceTotal(fileSummary, field) {
-    return Object.values(fileSummary.engineSequence || {}).reduce(
+  function trafficProjectionSequenceTotal(fileSummary, field) {
+    return Object.values(fileSummary.trafficProjectionSequence || {}).reduce(
       (sum, sequenceSummary) => sum + Number(sequenceSummary[field] || 0),
       0,
     );
   }
 
-  function indexEngineProjection(summary, valuePath, value) {
+  function indexTrafficProjectionSequence(summary, valuePath, value) {
     if (!valuePath?.startsWith?.("plugins.ajrmMarineTraffic") || !value || typeof value !== "object") {
       return;
     }
     const sessionId = value.sessionId || "unknown";
-    summary.engineSessions[sessionId] = (summary.engineSessions[sessionId] || 0) + 1;
+    summary.trafficProjectionSessions[sessionId] = (summary.trafficProjectionSessions[sessionId] || 0) + 1;
     if (!Number.isFinite(value.sequence)) return;
     const sequenceKey = `${valuePath}:${sessionId}`;
     const generatedAtMs = Date.parse(value.generatedAt || "");
-    const state = summary.engineSequence[sequenceKey] || {
+    const state = summary.trafficProjectionSequence[sequenceKey] || {
       path: valuePath,
       sessionId,
       first: value.sequence,
@@ -1324,7 +1324,7 @@ module.exports = function ajrmMarineCapture(app) {
     state.min = Math.min(state.min, value.sequence);
     state.max = Math.max(state.max, value.sequence);
     state.count += 1;
-    summary.engineSequence[sequenceKey] = state;
+    summary.trafficProjectionSequence[sequenceKey] = state;
   }
 
   async function bundleVoyage(voyage) {
@@ -1400,7 +1400,7 @@ module.exports = function ajrmMarineCapture(app) {
       thresholds: {
         movementSpeedKnots: options.movementSpeedKnots,
         movementSpeedMetersPerSecond: options.movementSpeedKnots / MPS_TO_KNOTS,
-        alignedWithEngineStationaryAutomute: true,
+        alignedWithTrafficStationaryAutomute: true,
         movementSeconds: options.movementSeconds,
         stoppedMinutes: options.stoppedMinutes,
         minFreeDiskGb: options.minFreeDiskGb,
@@ -1934,14 +1934,14 @@ async function buildCaptureIndexForDirectory(bundleDirectory, captureFiles) {
       records: files.reduce((sum, file) => sum + file.records, 0),
       duplicateRecordsInSample: files.reduce((sum, file) => sum + file.duplicateRecordsInSample, 0),
       outOfOrderRecords: files.reduce((sum, file) => sum + file.outOfOrderRecords, 0),
-      engineFileOrderRewinds: files.reduce((sum, file) => sum + engineSequenceTotalForIndex(file, "fileOrderRewinds"), 0),
-      engineSequenceRegressions: files.reduce((sum, file) => sum + engineSequenceTotalForIndex(file, "sequenceRegressions"), 0),
+      trafficProjectionFileOrderRewinds: files.reduce((sum, file) => sum + trafficProjectionSequenceTotalForIndex(file, "fileOrderRewinds"), 0),
+      trafficProjectionSequenceRegressions: files.reduce((sum, file) => sum + trafficProjectionSequenceTotalForIndex(file, "sequenceRegressions"), 0),
     },
     notes: [
       "Raw capture files are preserved exactly as AJRM Marine Logger wrote them.",
       "Analyse by update timestamp rather than file order when backfill is present.",
       "Duplicate counts are based on exact repeated JSON lines within the bounded per-file sample.",
-      "Engine fileOrderRewinds mean older generatedAt records appeared after newer records, usually because of backfill or overlapping logger files. engineSequenceRegressions are the count to investigate as possible Engine sequence faults.",
+      "Traffic projection fileOrderRewinds mean older generatedAt records appeared after newer records, usually because of backfill or overlapping logger files. trafficProjectionSequenceRegressions are the count to investigate as possible Traffic projection sequence faults.",
     ],
   };
 }
@@ -1958,8 +1958,8 @@ async function summarizeCaptureFileForIndex(filePath, fileName) {
     contexts: {},
     sources: {},
     paths: {},
-    engineSessions: {},
-    engineSequence: {},
+    trafficProjectionSessions: {},
+    trafficProjectionSequence: {},
     sampleTimeline: [],
   };
   if (!fs.existsSync(filePath)) {
@@ -2006,7 +2006,7 @@ async function summarizeCaptureFileForIndex(filePath, fileName) {
       for (const value of update.values || []) {
         const valuePath = value.path;
         incrementForIndex(summary.paths, valuePath);
-        indexEngineProjectionForIndex(summary, valuePath, value.value);
+        indexTrafficProjectionSequenceForIndex(summary, valuePath, value.value);
       }
     }
   }
@@ -2044,23 +2044,23 @@ function topCountsForIndex(counts, limit) {
   );
 }
 
-function engineSequenceTotalForIndex(fileSummary, field) {
-  return Object.values(fileSummary.engineSequence || {}).reduce(
+function trafficProjectionSequenceTotalForIndex(fileSummary, field) {
+  return Object.values(fileSummary.trafficProjectionSequence || {}).reduce(
     (sum, sequenceSummary) => sum + Number(sequenceSummary[field] || 0),
     0,
   );
 }
 
-function indexEngineProjectionForIndex(summary, valuePath, value) {
+function indexTrafficProjectionSequenceForIndex(summary, valuePath, value) {
   if (!valuePath?.startsWith?.("plugins.ajrmMarineTraffic") || !value || typeof value !== "object") {
     return;
   }
   const sessionId = value.sessionId || "unknown";
-  summary.engineSessions[sessionId] = (summary.engineSessions[sessionId] || 0) + 1;
+  summary.trafficProjectionSessions[sessionId] = (summary.trafficProjectionSessions[sessionId] || 0) + 1;
   if (!Number.isFinite(value.sequence)) return;
   const sequenceKey = `${valuePath}:${sessionId}`;
   const generatedAtMs = Date.parse(value.generatedAt || "");
-  const state = summary.engineSequence[sequenceKey] || {
+  const state = summary.trafficProjectionSequence[sequenceKey] || {
     path: valuePath,
     sessionId,
     first: value.sequence,
@@ -2100,7 +2100,7 @@ function indexEngineProjectionForIndex(summary, valuePath, value) {
   state.min = Math.min(state.min, value.sequence);
   state.max = Math.max(state.max, value.sequence);
   state.count += 1;
-  summary.engineSequence[sequenceKey] = state;
+  summary.trafficProjectionSequence[sequenceKey] = state;
 }
 
 function httpJson(method, url, body) {
