@@ -1,12 +1,47 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const AdmZip = require("adm-zip");
 const createPlugin = require("../plugin");
 
 const {
+  buildPortableDownloadBundle,
   reconcilePortableCaptureReferences,
   rewritePortableDownloadEvents,
 } = createPlugin._private;
+
+test("already-portable download remains unchanged without external Logger files", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-portable-idempotent-"),
+  );
+  const sourcePath = path.join(directory, "voyage-portable.zip");
+  const captureFileName = "capture-2026-07-27T12-00-00-000Z.jsonl.gz";
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    captureFileMode: "portable-download",
+    captureFiles: [captureFileName],
+    captureReferences: [{
+      fileName: captureFileName,
+      sourcePath: path.join(directory, "missing", captureFileName),
+      compressedSourcePath: "",
+    }],
+  })));
+  zip.addFile(`capture/${captureFileName}`, Buffer.from("embedded-capture"));
+  zip.writeZip(sourcePath);
+
+  const rebuilt = await buildPortableDownloadBundle(
+    sourcePath,
+    path.basename(sourcePath),
+  );
+  assert.equal(rebuilt, null);
+  const preserved = new AdmZip(sourcePath);
+  assert.equal(
+    preserved.readAsText(`capture/${captureFileName}`),
+    "embedded-capture",
+  );
+});
 
 test("portable download references describe the copied compressed capture file", () => {
   const index = {

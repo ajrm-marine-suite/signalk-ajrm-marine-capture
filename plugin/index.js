@@ -67,6 +67,7 @@ module.exports = function ajrmMarineCapture(app) {
   let stoppedSinceMs = null;
   let autoStartInhibited = false;
   let loggerPlaybackActive = false;
+  let loggerPlayback = null;
   let movementSuppressedUntilFreshSpeed = false;
   let navigationContext = {
     profile: null,
@@ -318,6 +319,17 @@ module.exports = function ajrmMarineCapture(app) {
       }
     });
 
+    router.post("/voyage/replay/start", async (req, res) => {
+      try {
+        const voyage = await startRecomputedReplayVoyage({
+          comment: req.body?.comment,
+        });
+        res.json({ ok: true, voyage });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error.message });
+      }
+    });
+
     router.post("/voyage/comment", async (req, res) => {
       try {
         const comment = normalizeComment(req.body?.comment);
@@ -332,8 +344,35 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/stop", async (_req, res) => {
       try {
+        assertOrdinaryVoyageCanStop();
         const bundle = await stopVoyage("manual");
         inhibitAutoStartUntilStationary();
+        res.json({ ok: true, bundle });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error.message });
+      }
+    });
+
+    router.post("/voyage/replay/stop", async (_req, res) => {
+      try {
+        if (!currentVoyage?.recomputedReplay) {
+          throw new Error("No recomputed replay voyage is active");
+        }
+        const loggerStatus = await getAjrmMarineLoggerStatus();
+        const playback = loggerStatus?.playback || {};
+        const coverage = playback.coverage || {};
+        const playbackIncomplete =
+          playback.active ||
+          playback.paused ||
+          coverage.complete !== true ||
+          coverage.preparedComplete !== true ||
+          (playback.lastReason || coverage.lastReason) !== "end of capture";
+        if (playbackIncomplete) {
+          throw new Error(
+            "Let Logger reach the end before building the recomputed voyage ZIP",
+          );
+        }
+        const bundle = await stopVoyage("recomputed replay capture stopped");
         res.json({ ok: true, bundle });
       } catch (error) {
         res.status(400).json({ ok: false, error: error.message });
@@ -484,6 +523,7 @@ module.exports = function ajrmMarineCapture(app) {
 
   function updateLoggerPlaybackState(value) {
     const playback = unwrapValue(value);
+    loggerPlayback = playback && typeof playback === "object" ? playback : null;
     const active = playback?.active === true || playback?.playing === true;
     if (active) {
       loggerPlaybackActive = true;
@@ -581,6 +621,7 @@ module.exports = function ajrmMarineCapture(app) {
 
     if (
       currentVoyage &&
+      !currentVoyage.recomputedReplay &&
       !stoppingVoyage &&
       stoppedSinceMs &&
       now - stoppedSinceMs >= options.stoppedMinutes * 60 * 1000
@@ -619,7 +660,11 @@ module.exports = function ajrmMarineCapture(app) {
         if (comment !== undefined) await setVoyageComment(comment);
         return startVoyage(reason);
       },
+      async startRecomputedReplay({ comment } = {}) {
+        return startRecomputedReplayVoyage({ comment });
+      },
       async stop({ reason = "BITE run all complete" } = {}) {
+        assertOrdinaryVoyageCanStop();
         return stopVoyage(reason);
       },
       async prepareVoyageDownload(fileName) {
@@ -658,12 +703,76 @@ module.exports = function ajrmMarineCapture(app) {
     publishState();
   }
 
-  async function startVoyage(reason) {
+  async function startRecomputedReplayVoyage({ comment } = {}) {
     if (currentVoyage) return summarizeVoyage(currentVoyage);
+    const loggerStatus = await getAjrmMarineLoggerStatus();
+    const playback = loggerStatus?.playback;
+    if (!playback?.loaded) {
+      throw new Error("Load the parent voyage in AJRM Marine Logger first");
+    }
+    if (playback.mode !== "sensor-sources") {
+      throw new Error("Select Sensor sources only playback in AJRM Marine Logger first");
+    }
+    if (playback.sourcePolicy?.id !== "strict-recorded-sensor-source-allowlist-v1") {
+      throw new Error("AJRM Marine Logger did not publish the strict sensor source policy");
+    }
+    const resolvedSensorSourceIds =
+      playback.sourcePolicy.resolvedSensorSourceIds ||
+      playback.sourcePolicy.sensorSourceIds;
+    if (!Array.isArray(resolvedSensorSourceIds) ||
+        !resolvedSensorSourceIds.length) {
+      throw new Error("Select at least one exact recorded sensor source ID");
+    }
+    if (playback.rate !== 1) {
+      throw new Error("Select 1x playback in AJRM Marine Logger first");
+    }
+    const parentVoyage =
+      playback.voyageFileName || playback.displayFileName || playback.fileName;
+    const recomputedReplay = {
+      schemaVersion: 1,
+      kind: "recomputed-replay",
+      parentVoyage,
+      playbackFileName: playback.fileName,
+      displayFileName: playback.displayFileName || playback.fileName,
+      sourceKind: playback.sourceKind,
+      playbackMode: playback.replayMode || playback.mode,
+      rate: playback.rate,
+      sourcePolicy: playback.sourcePolicy,
+      sourceCatalog: playback.sourceCatalog || {},
+      originalFrom: playback.captureFrom || playback.from,
+      originalTo: playback.captureTo || playback.to,
+      originalVoyageStartedAt: playback.voyageStartedAt || null,
+      startedOriginalAt: playback.originalCapturedAt || playback.current || null,
+      sourceFilterStatsAtStart: playback.sourceFilterStats || null,
+      liveInputIsolationRequired: true,
+      liveInputIsolationAtStart: playback.liveInputIsolation || null,
+    };
+    const replayComment = normalizeComment(comment) ||
+      `Recomputed replay of ${parentVoyage}`;
+    return startVoyage("recomputed replay", {
+      comment: replayComment,
+      recomputedReplay,
+    });
+  }
+
+  function assertOrdinaryVoyageCanStop() {
+    if (currentVoyage?.recomputedReplay) {
+      throw new Error(
+        "Use Stop and build ZIP after Logger reaches complete sensor-only replay coverage",
+      );
+    }
+  }
+
+  async function startVoyage(reason, startOptions = {}) {
+    if (currentVoyage) return summarizeVoyage(currentVoyage);
+    if (loggerPlaybackActive && !startOptions.recomputedReplay) {
+      throw new Error("Use Start recomputed replay while Logger playback is active");
+    }
     ensureDirectories();
     refreshNavigationContextFromSelfPath();
     const startedAt = new Date();
-    const comment = normalizeComment(nextVoyageComment)
+    const comment = normalizeComment(startOptions.comment)
+      || normalizeComment(nextVoyageComment)
       || defaultVoyageComment({
         startedAt,
         profile: navigationContext.profile,
@@ -688,8 +797,9 @@ module.exports = function ajrmMarineCapture(app) {
       reason,
       comment,
       snapshotCount: 0,
-      captureMode: options.captureMode,
-      captureFileMode: options.captureFileMode,
+      captureMode: startOptions.recomputedReplay ? "voyage" : options.captureMode,
+      captureFileMode: startOptions.recomputedReplay ? "portable" : options.captureFileMode,
+      recomputedReplay: startOptions.recomputedReplay || null,
       ajrmMarineLogger: null,
       events: [],
       drTrack: {
@@ -713,9 +823,27 @@ module.exports = function ajrmMarineCapture(app) {
     });
     addEvent("voyage-started", `${id}: ${reason}`);
 
-    currentVoyage.ajrmMarineLogger = await callAjrmMarineLogger("/capture/start", {
-      backfillMinutes: options.captureBackfillMinutes,
-    }).catch((error) => ({ ok: false, error: error.message }));
+    currentVoyage.ajrmMarineLogger = await callAjrmMarineLogger(
+      currentVoyage.recomputedReplay
+        ? "/playback/result-capture/start"
+        : "/capture/start",
+      currentVoyage.recomputedReplay
+        ? {
+            parentVoyage: currentVoyage.recomputedReplay.parentVoyage,
+            requestedBy: plugin.id,
+          }
+        : { backfillMinutes: options.captureBackfillMinutes },
+    ).catch((error) => ({ ok: false, error: error.message }));
+    if (!currentVoyage.ajrmMarineLogger?.ok) {
+      const message = currentVoyage.ajrmMarineLogger?.error ||
+        "AJRM Marine Logger did not start";
+      const failedVoyage = currentVoyage;
+      await closeDrTrack(failedVoyage, new Date().toISOString()).catch(() => {});
+      await fs.promises.rm(failedVoyage.directory, { recursive: true, force: true })
+        .catch(() => {});
+      currentVoyage = null;
+      throw new Error(message);
+    }
     currentVoyage.captureReferences = initialCaptureReferences(currentVoyage);
     if (currentVoyage.captureReferences.length) {
       addVoyageEvent(
@@ -752,11 +880,52 @@ module.exports = function ajrmMarineCapture(app) {
       addVoyageEvent("stop", reason);
       addEvent("voyage-stopping", `${voyage.id}: ${reason}`);
       if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
-      const captureStop = await callAjrmMarineLogger("/capture/stop", {}).catch((error) => ({
-        ok: false,
-        error: error.message,
-      }));
+      const captureStop = voyage.captureStop?.ok
+        ? voyage.captureStop
+        : await callAjrmMarineLogger(
+            voyage.recomputedReplay
+              ? "/playback/result-capture/stop"
+              : "/capture/stop",
+            {},
+          ).catch((error) => ({
+            ok: false,
+            error: error.message,
+          }));
       voyage.captureStop = captureStop;
+      if (!captureStop?.ok) {
+        throw new Error(
+          captureStop?.error ||
+          "AJRM Marine Logger did not close the voyage capture",
+        );
+      }
+      if (voyage.recomputedReplay) {
+        const replayResult = captureStop?.recording?.replayResult || null;
+        const resultSegments = validateRecomputedResultSegmentManifest(
+          replayResult?.resultSegments,
+        );
+        if (
+          !replayResult ||
+          replayResult.coverage?.complete !== true ||
+          replayResult.coverage?.preparedComplete !== true ||
+          replayResult.coverage?.lastReason !== "end of capture" ||
+          replayResult.coverage?.resultSegmentsComplete !== true ||
+          resultSegments.complete !== true
+        ) {
+          throw new Error(
+            "AJRM Marine Logger did not confirm complete replay coverage and result segments",
+          );
+        }
+        voyage.recomputedReplay = {
+          ...voyage.recomputedReplay,
+          rate: replayResult?.rate ?? voyage.recomputedReplay.rate,
+          sourcePolicy:
+            replayResult?.sourcePolicy || voyage.recomputedReplay.sourcePolicy,
+          sourceCatalog:
+            replayResult?.sourceCatalog || voyage.recomputedReplay.sourceCatalog,
+          completedAt: new Date().toISOString(),
+          result: replayResult,
+        };
+      }
       const stoppedAt = new Date().toISOString();
       voyage.stoppedAt = stoppedAt;
       voyage.stopReason = reason;
@@ -764,8 +933,21 @@ module.exports = function ajrmMarineCapture(app) {
       await copyDrPlotFixes(voyage);
       await copyConsoleBiteReports(voyage);
       await copyCaptureFiles(voyage, captureStop);
+      if (
+        voyage.recomputedReplay &&
+        (!Array.isArray(voyage.captureFiles) || !voyage.captureFiles.length)
+      ) {
+        throw new Error(
+          "No recomputed AJRM Marine Logger capture was copied; portable ZIP creation stopped",
+        );
+      }
       const index = await writeVoyageIndex(voyage);
       const bundle = await bundleVoyage(voyage, index);
+      if (voyage.recomputedReplay && bundle?.format !== "zip") {
+        throw new Error(
+          bundle?.error || "The recomputed voyage could not be packaged as a ZIP",
+        );
+      }
       if (bundle?.format === "zip" && options.deleteWorkingDirectoryAfterZip) {
         await fs.promises.rm(voyage.directory, { recursive: true, force: true });
         bundle.workingDirectoryDeleted = true;
@@ -826,6 +1008,7 @@ module.exports = function ajrmMarineCapture(app) {
       captureFileMode: CAPTURE_FILE_MODES.has(existingIndex?.captureFileMode)
         ? existingIndex.captureFileMode
         : "reference",
+      recomputedReplay: existingIndex?.recomputedReplay || null,
       ajrmMarineLogger: existingIndex?.ajrmMarineLogger?.start || null,
       captureStop: {
         ok: false,
@@ -930,14 +1113,35 @@ module.exports = function ajrmMarineCapture(app) {
 
   async function copyCaptureFiles(voyage, captureStop) {
     const capturesDir = ajrmMarineLoggerCapturesDir();
-    const status = options.captureFileMode === "reference"
+    if (voyage.recomputedReplay) {
+      const manifest = validateRecomputedResultSegmentManifest(
+        captureStop?.recording?.replayResult?.resultSegments,
+      );
+      const segments = manifest.segments;
+      voyage.captureReferences = segments.map((segment) =>
+        captureReference(capturesDir, segment),
+      );
+      const copied = [];
+      for (const segment of segments) {
+        const copiedName = await copyDeclaredReplayResultSegment(
+          capturesDir,
+          segment,
+          voyage.directory,
+        );
+        copied.push(copiedName);
+        addVoyageEvent("capture-copied", copiedName);
+      }
+      voyage.captureFiles = copied;
+      return;
+    }
+    const status = voyage.captureFileMode === "reference"
       ? await getAjrmMarineLoggerStatus()
       : await waitForAjrmMarineLoggerCompression(capturesDir, voyage, captureStop);
     const segments = captureSegmentsForVoyage(status, voyage, captureStop);
     voyage.captureReferences = segments.map((segment) =>
       captureReference(capturesDir, segment),
     );
-    if (options.captureFileMode === "reference") {
+    if (voyage.captureFileMode === "reference") {
       voyage.captureFiles = [];
       addVoyageEvent(
         "capture-referenced",
@@ -958,6 +1162,80 @@ module.exports = function ajrmMarineCapture(app) {
     }
     voyage.captureFiles = copied;
     if (!copied.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
+  }
+
+  function validateRecomputedResultSegmentManifest(manifest) {
+    if (!manifest || typeof manifest !== "object") {
+      throw new Error("AJRM Marine Logger did not declare recomputed result segments");
+    }
+    const segments = Array.isArray(manifest.segments) ? manifest.segments : [];
+    const exactNames = new Set();
+    const logicalNames = new Set();
+    for (const segment of segments) {
+      const fileName = String(segment?.fileName || "");
+      if (
+        !fileName ||
+        path.basename(fileName) !== fileName ||
+        !/\.jsonl(?:\.gz)?$/i.test(fileName) ||
+        segment.finalized !== true ||
+        segment.available !== true ||
+        Number(segment.lines || 0) <= 0 ||
+        Number(segment.bytes || 0) <= 0
+      ) {
+        throw new Error("AJRM Marine Logger declared an invalid recomputed result segment");
+      }
+      const logicalName = logicalCaptureFileName(fileName);
+      if (exactNames.has(fileName) || logicalNames.has(logicalName)) {
+        throw new Error(`AJRM Marine Logger declared duplicate result segment ${fileName}`);
+      }
+      exactNames.add(fileName);
+      logicalNames.add(logicalName);
+    }
+    if (
+      manifest.complete !== true ||
+      segments.length === 0 ||
+      Number(manifest.segmentsTotal) !== segments.length ||
+      Number(manifest.segmentsFinalized) !== segments.length ||
+      Number(manifest.lines) !== segments.reduce(
+        (total, segment) => total + Number(segment.lines || 0),
+        0,
+      ) ||
+      Number(manifest.bytes) !== segments.reduce(
+        (total, segment) => total + Number(segment.bytes || 0),
+        0,
+      )
+    ) {
+      throw new Error("AJRM Marine Logger result segment manifest is incomplete");
+    }
+    return manifest;
+  }
+
+  async function copyDeclaredReplayResultSegment(
+    capturesDir,
+    segment,
+    voyageDirectory,
+  ) {
+    const source = path.join(capturesDir, segment.fileName);
+    const sourceInfo = await fs.promises.stat(source).catch(() => null);
+    const expectedBytes = Number(segment.bytes || 0);
+    if (
+      !sourceInfo?.isFile() ||
+      sourceInfo.size <= 0 ||
+      sourceInfo.size !== expectedBytes
+    ) {
+      throw new Error(
+        `Declared recomputed result segment is missing or changed: ${segment.fileName}`,
+      );
+    }
+    const target = path.join(voyageDirectory, "capture", segment.fileName);
+    await fs.promises.copyFile(source, target);
+    const targetInfo = await fs.promises.stat(target).catch(() => null);
+    if (!targetInfo?.isFile() || targetInfo.size !== expectedBytes) {
+      throw new Error(
+        `Failed to verify copied recomputed result segment: ${segment.fileName}`,
+      );
+    }
+    return segment.fileName;
   }
 
   function initialCaptureReferences(voyage) {
@@ -1140,6 +1418,7 @@ module.exports = function ajrmMarineCapture(app) {
       snapshotCount: voyage.snapshotCount,
       captureMode: voyage.captureMode || options.captureMode,
       captureFileMode: voyage.captureFileMode || options.captureFileMode,
+      recomputedReplay: voyage.recomputedReplay || null,
       interruptedByRestart: voyage.interruptedByRestart === true,
       recoveredAt: voyage.recoveredAt || null,
       ajrmMarineLogger: {
@@ -1160,6 +1439,7 @@ module.exports = function ajrmMarineCapture(app) {
         "Use tracks/dr-plot-fixes.json for navigator-style timed, manual, observed, GPS-lost, and GPS-return DR plot fixes when present.",
         "Capture files may contain AJRM Marine Logger backfill followed by live records. Use captureIndex for timestamp order, overlap and duplicate guidance before scanning large logs.",
         "If captureFileMode is reference, raw AJRM Marine Logger files were not copied into the bundle; use captureReferences on this server to locate the source recordings.",
+        "If recomputedReplay is present, this portable bundle was captured from fresh-wall-time replay of the listed sensor source identities; use parentVoyage, playbackMode, rate, sourcePolicy and sourceFilterStats to audit it.",
       ],
     };
     const indexPath = path.join(voyage.directory, "index.json");
@@ -1370,6 +1650,31 @@ module.exports = function ajrmMarineCapture(app) {
         const recording = await ajrmMarineLoggerApi.stopCapture("voyage capture stopped");
         return { ok: true, recording };
       }
+      if (
+        route === "/playback/result-capture/start" &&
+        typeof ajrmMarineLoggerApi.startReplayResultCapture === "function"
+      ) {
+        const recording = await ajrmMarineLoggerApi.startReplayResultCapture(body || {});
+        return { ok: true, recording };
+      }
+      if (
+        route === "/playback/result-capture/stop" &&
+        typeof ajrmMarineLoggerApi.stopReplayResultCapture === "function"
+      ) {
+        const recording = await ajrmMarineLoggerApi.stopReplayResultCapture(
+          "recomputed replay voyage stopped",
+        );
+        return { ok: true, recording };
+      }
+      if (
+        route === "/playback/result-capture/stop" &&
+        typeof ajrmMarineLoggerApi.stopCapture === "function"
+      ) {
+        const recording = await ajrmMarineLoggerApi.stopCapture(
+          "recomputed replay voyage stopped",
+        );
+        return { ok: true, recording };
+      }
     }
     return httpJson("POST", `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger${route}`, body);
   }
@@ -1383,6 +1688,9 @@ module.exports = function ajrmMarineCapture(app) {
           "GET",
           `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger/status`,
         ).catch((error) => ({ ok: false, error: error.message }));
+    if (ajrmMarineLogger?.playback && typeof ajrmMarineLogger.playback === "object") {
+      loggerPlayback = ajrmMarineLogger.playback;
+    }
     return {
       ok: true,
       plugin: plugin.id,
@@ -1395,6 +1703,7 @@ module.exports = function ajrmMarineCapture(app) {
       stwKnots,
       voyageState,
       loggerPlaybackActive,
+      loggerPlayback,
       movementSuppressedUntilFreshSpeed,
       autoStartInhibited,
       thresholds: {
@@ -1448,6 +1757,7 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.stwKnots", value: stwKnots },
       { path: "plugins.ajrmMarineCapture.voyageState", value: voyageState },
       { path: "plugins.ajrmMarineCapture.loggerPlaybackActive", value: loggerPlaybackActive },
+      { path: "plugins.ajrmMarineCapture.loggerPlayback", value: loggerPlayback },
       { path: "plugins.ajrmMarineCapture.movementSuppressedUntilFreshSpeed", value: movementSuppressedUntilFreshSpeed },
       { path: "plugins.ajrmMarineCapture.autoStartInhibited", value: autoStartInhibited },
       { path: "plugins.ajrmMarineCapture.thresholds.movementSpeedKnots", value: options.movementSpeedKnots },
@@ -1459,6 +1769,10 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.currentVoyage.startedAt", value: currentVoyage?.startedAt || null },
       { path: "plugins.ajrmMarineCapture.currentVoyage.comment", value: currentVoyage?.comment || null },
       { path: "plugins.ajrmMarineCapture.currentVoyage.snapshotCount", value: currentVoyage?.snapshotCount || 0 },
+      {
+        path: "plugins.ajrmMarineCapture.currentVoyage.recomputedReplay",
+        value: currentVoyage?.recomputedReplay || null,
+      },
       { path: "plugins.ajrmMarineCapture.lastBundle.fileName", value: lastBundle?.fileName || null },
       { path: "plugins.ajrmMarineCapture.lastBundle.path", value: lastBundle?.path || null },
     ];
@@ -1571,6 +1885,7 @@ module.exports = function ajrmMarineCapture(app) {
       snapshotCount: voyage.snapshotCount,
       captureMode: voyage.captureMode || options.captureMode,
       captureFileMode: voyage.captureFileMode || options.captureFileMode,
+      recomputedReplay: voyage.recomputedReplay || null,
       directory: voyage.directory,
     };
   }
@@ -1802,6 +2117,46 @@ function normalizeDrPlotFix(value) {
     trust: stringOrNull(value.trust),
     drSource: stringOrNull(value.drSource),
     uncertaintyRadiusMeters: numberOrNull(value.uncertaintyRadiusMeters),
+    drGpsDependent: booleanOrNull(value.drGpsDependent),
+    drLeewayStatus: stringOrNull(value.drLeewayStatus),
+    drCurrentOrigin: stringOrNull(value.drCurrentOrigin),
+    drHeadingSource: stringOrNull(value.drHeadingSource),
+    drTrackThroughWaterSource: stringOrNull(value.drTrackThroughWaterSource),
+    drSpeedThroughWaterSource: stringOrNull(value.drSpeedThroughWaterSource),
+    drCurrentSource: stringOrNull(value.drCurrentSource),
+    drLeewaySource: stringOrNull(value.drLeewaySource),
+    integritySource: stringOrNull(value.integritySource),
+    integrityAssurance: stringOrNull(value.integrityAssurance),
+    integrityComparisonAvailable: booleanOrNull(
+      value.integrityComparisonAvailable,
+    ),
+    integrityUnavailableReason: longStringOrNull(
+      value.integrityUnavailableReason,
+    ),
+    integrityAgeSeconds: numberOrNull(value.integrityAgeSeconds),
+    integrityUncertaintyRadiusMeters: numberOrNull(
+      value.integrityUncertaintyRadiusMeters,
+    ),
+    integrityGpsDependent: booleanOrNull(value.integrityGpsDependent),
+    integrityLeewayStatus: stringOrNull(value.integrityLeewayStatus),
+    integrityCurrentOrigin: stringOrNull(value.integrityCurrentOrigin),
+    integrityHeadingSource: stringOrNull(value.integrityHeadingSource),
+    integrityTrackThroughWaterSource: stringOrNull(
+      value.integrityTrackThroughWaterSource,
+    ),
+    integritySpeedThroughWaterSource: stringOrNull(
+      value.integritySpeedThroughWaterSource,
+    ),
+    integrityCurrentSource: stringOrNull(value.integrityCurrentSource),
+    integrityLeewaySource: stringOrNull(value.integrityLeewaySource),
+    referenceKind: stringOrNull(value.referenceKind),
+    referenceSource: stringOrNull(value.referenceSource),
+    referenceMethod: stringOrNull(value.referenceMethod),
+    referenceAgeSeconds: numberOrNull(value.referenceAgeSeconds),
+    referenceUncertaintyDegrees: numberOrNull(
+      value.referenceUncertaintyDegrees,
+    ),
+    referenceGpsDependent: booleanOrNull(value.referenceGpsDependent),
     lastTrustedFixAgeSeconds: numberOrNull(value.lastTrustedFixAgeSeconds),
     distanceFromLastTrustedFixMeters: numberOrNull(value.distanceFromLastTrustedFixMeters),
     stwMps: numberOrNull(value.stwMps),
@@ -1869,6 +2224,10 @@ function drTrackSample(value, timestamp) {
     gps,
     operational,
     integrity,
+    integrityAssurance: normalizeIntegrityAssurance(state.integrityAssurance),
+    navigationReference: normalizeNavigationReferenceProvenance(
+      state.navigationProvenance?.navigationReference,
+    ),
     reasons: Array.isArray(state.reasons) ? state.reasons.slice(0, 5) : [],
   };
 }
@@ -1881,6 +2240,72 @@ function drTrackPosition(track) {
     source: track?.source || null,
     ageSeconds: numberOrNull(track?.ageSeconds),
     uncertaintyRadiusMeters: numberOrNull(track?.uncertaintyRadiusMeters),
+    gpsDependent: booleanOrNull(track?.gpsDependent),
+    leewayStatus: stringOrNull(track?.leewayStatus),
+    currentOrigin: stringOrNull(track?.currentOrigin),
+    assurance: stringOrNull(track?.assurance),
+    comparisonAvailable: booleanOrNull(track?.comparisonAvailable),
+    unavailableReason: longStringOrNull(track?.unavailableReason),
+    provenance: normalizeDrProvenance(track?.provenance),
+  };
+}
+
+function normalizeIntegrityAssurance(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    status: stringOrNull(value.status),
+    comparisonAvailable: booleanOrNull(value.comparisonAvailable),
+    reason: longStringOrNull(value.reason),
+    leewayStatus: stringOrNull(value.leewayStatus),
+  };
+}
+
+function normalizeNavigationReferenceProvenance(value) {
+  if (
+    !value
+    || value.contract !== "ajrm-marine-navigation-reference"
+    || Number(value.schemaVersion) !== 1
+  ) {
+    return null;
+  }
+  const reference = value.clockReference;
+  return {
+    contract: value.contract,
+    schemaVersion: 1,
+    status: stringOrNull(value.status),
+    clockReference: reference && typeof reference === "object"
+      ? {
+          kind: stringOrNull(reference.kind),
+          source: stringOrNull(reference.source),
+          method: stringOrNull(reference.method),
+          ageMs: numberOrNull(reference.ageMs),
+          uncertaintyRad: numberOrNull(reference.uncertaintyRad),
+          gpsDependent: booleanOrNull(reference.gpsDependent),
+        }
+      : null,
+  };
+}
+
+function normalizeDrProvenance(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    heading: normalizeEvidence(value.heading),
+    trackThroughWater: normalizeEvidence(value.trackThroughWater),
+    speedThroughWater: normalizeEvidence(value.speedThroughWater),
+    current: normalizeEvidence(value.current),
+    leeway: normalizeEvidence(value.leeway),
+  };
+}
+
+function normalizeEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    source: stringOrNull(value.source),
+    method: stringOrNull(value.method),
+    origin: stringOrNull(value.origin),
+    ageMs: numberOrNull(value.ageMs),
+    uncertaintyRad: numberOrNull(value.uncertaintyRad),
+    gpsDependent: booleanOrNull(value.gpsDependent),
   };
 }
 
@@ -1900,16 +2325,29 @@ function drTrackSampleKey(sample) {
     gps: sample.gps,
     operational: sample.operational,
     integrity: sample.integrity,
+    integrityAssurance: sample.integrityAssurance,
+    navigationReference: sample.navigationReference,
   });
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
 function stringOrNull(value) {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, 120) : null;
+}
+
+function longStringOrNull(value) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, 500)
+    : null;
+}
+
+function booleanOrNull(value) {
+  return typeof value === "boolean" ? value : null;
 }
 
 async function buildCaptureIndexForDirectory(bundleDirectory, captureFiles) {
@@ -2163,6 +2601,7 @@ async function listVoyageBundlesInDirectory(directory) {
       comment: normalizeComment(index?.comment),
       startedAt: index?.startedAt || null,
       stoppedAt: index?.stoppedAt || null,
+      recomputedReplay: index?.recomputedReplay || null,
       downloadUrl: `/plugins/signalk-ajrm-marine-capture/voyages/${encodeURIComponent(entry.name)}/download`,
     });
   }
@@ -2182,6 +2621,9 @@ async function readVoyageZipIndex(filePath) {
 
 async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   const index = await readVoyageZipIndex(sourceZipPath);
+  if (voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index)) {
+    return null;
+  }
   const references = Array.isArray(index?.captureReferences) ? index.captureReferences : [];
   if (!references.length) return null;
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ajrm-marine-voyage-download-"));
@@ -2193,14 +2635,37 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   const portableIndexPath = path.join(workDir, "index.json");
   const portableIndex = await readJson(portableIndexPath) || index;
   const copiedReferences = [];
-  const copiedNames = new Set();
+  const embeddedCaptureFiles = await listPortableCaptureFiles(workDir);
+  const copiedNames = new Set(embeddedCaptureFiles);
   const missingReferences = [];
   for (const reference of references) {
+    const embeddedName = embeddedCaptureFiles.find(
+      (candidate) =>
+        logicalCaptureFileNameForDownload(candidate) ===
+        logicalCaptureFileNameForDownload(reference?.fileName),
+    );
+    if (embeddedName) {
+      const embeddedInfo = await fs.promises.stat(
+        path.join(workDir, "capture", embeddedName),
+      );
+      copiedReferences.push({
+        fileName: embeddedName,
+        bytes: embeddedInfo.size,
+      });
+      continue;
+    }
     const copied = await copyCaptureReferenceForDownload(reference, path.join(workDir, "capture"), copiedNames);
     if (copied) copiedReferences.push(copied);
     else missingReferences.push(reference.fileName || reference.sourcePath || "unknown");
   }
-  const captureFiles = copiedReferences.map((reference) => reference.fileName);
+  const captureFiles = await listPortableCaptureFiles(workDir);
+  if (!captureFiles.length || missingReferences.length) {
+    await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
+    const unavailable = missingReferences.length || references.length;
+    throw new Error(
+      `Cannot prepare a complete portable voyage: ${unavailable} AJRM Marine Logger capture reference${unavailable === 1 ? "" : "s"} unavailable`,
+    );
+  }
   portableIndex.originalCaptureFileMode = portableIndex.captureFileMode || "reference";
   portableIndex.captureFileMode = "portable-download";
   portableIndex.captureFiles = captureFiles;
@@ -2220,6 +2685,76 @@ async function buildPortableDownloadBundle(sourceZipPath, fileName) {
   await writeJson(portableIndexPath, portableIndex);
   await writeDirectoryZip(outputPath, workDir);
   return { path: outputPath, directory };
+}
+
+function voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index) {
+  const captureFiles = Array.isArray(index?.captureFiles)
+    ? index.captureFiles
+    : [];
+  if (!captureFiles.length) return false;
+  const declaredLogicalNames = new Set(
+    captureFiles.map((fileName) =>
+      logicalCaptureFileNameForDownload(path.basename(String(fileName || ""))),
+    ),
+  );
+  const references = Array.isArray(index?.captureReferences)
+    ? index.captureReferences
+    : [];
+  if (
+    references.some(
+      (reference) =>
+        !declaredLogicalNames.has(
+          logicalCaptureFileNameForDownload(reference?.fileName),
+        ),
+    )
+  ) {
+    return false;
+  }
+  try {
+    const zip = new AdmZip(sourceZipPath);
+    return captureFiles.every((fileName) => {
+      const entryName = portableCaptureEntryName(fileName);
+      const entry = entryName ? zip.getEntry(entryName) : null;
+      return Boolean(
+        entry &&
+        !entry.isDirectory &&
+        Number(entry.header?.size || 0) > 0,
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+function portableCaptureEntryName(fileName) {
+  const normalized = String(fileName || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (
+    !normalized ||
+    normalized.split("/").includes("..") ||
+    !/\.jsonl(?:\.gz)?$/i.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized.startsWith("capture/")
+    ? normalized
+    : `capture/${normalized}`;
+}
+
+async function listPortableCaptureFiles(workDir) {
+  const captureDirectory = path.join(workDir, "capture");
+  const entries = await fs.promises.readdir(captureDirectory, {
+    withFileTypes: true,
+  }).catch(() => []);
+  return entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        /\.jsonl(?:\.gz)?$/i.test(entry.name),
+    )
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function extractZipToDirectory(filePath, directory) {
@@ -2613,9 +3148,11 @@ function safeBaseName(value) {
 }
 
 module.exports._private = {
+  buildPortableDownloadBundle,
   biteReportOverlapsVoyage,
   cleanHarbourName,
   defaultVoyageComment,
+  drTrackSample,
   filterDrPlotFixesForVoyage,
   nextMovementGateState,
   normalizeDrPlotFixes,

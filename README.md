@@ -1,5 +1,7 @@
 # AJRM Marine Capture
 
+> **Alpha Release disclaimer:** This software is Alpha Release and has not been tested in live environments and must not be relied upon for navigation or safety. The Authors do not accept any responsibility for loss or damage as a result of using this software.
+
 AJRM Marine Capture is a Signal K voyage recorder and diagnostic bundle orchestrator
 for AJRM Marine suite testing and real sailing review.
 
@@ -7,6 +9,57 @@ It watches own-vessel movement, starts AJRM Marine Logger when the vessel gets u
 takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, stops recording
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
+
+## Recomputed voyage replay
+
+Capture can explicitly record a new portable child voyage while AJRM Marine
+Logger replays only sensor-origin updates from a parent voyage:
+
+1. Disable or disconnect current live sensor feeds, then restart Signal K to
+   clear retained calculator state. Leave the applications whose calculations
+   are under test enabled. This is important: Logger can quarantine and report
+   detected live physical-source deltas in the child log, but cannot stop them
+   influencing calculations elsewhere in Signal K.
+2. In Logger select a parent voyage and **Sensor sources only (recompute)**.
+3. Confirm Logger's resolved exact physical source IDs. Its default `YDEN`
+   prefix is resolved from the recording and supports both short and long YDEN
+   source identities; optional exact IDs can be added for other hardware.
+4. In Capture press **Start replay result**. This starts a dedicated Logger
+   result recording with zero rolling-buffer backfill and forces portable
+   capture-file handling for the child voyage.
+5. In Logger use `1x` and start playback. The result workflow enforces `1x`
+   and forces every pre-indexed voyage segment even when ordinary auto-play-next
+   is off. Capture trusts Logger's cumulative `coverage.complete` contract and
+   prevents finalisation until every replay segment has completed.
+6. After Logger reaches the end, press **Stop and build ZIP**. Logger allows a
+   three-second quiet-period calculation flush, extended by each late output
+   and bounded to fifteen seconds, before the ZIP is finalised. Logger then
+   declares every rotated result file in `resultSegments`; Capture verifies and
+   copies every declared file by exact name and byte size.
+
+The result contains the replayed sensor inputs and newly recalculated live
+outputs. Its `index.json` includes `recomputedReplay` metadata with the parent
+voyage, playback mode, rate, source catalogue, configured selection rule,
+resolved exact source IDs, filter counts, original recording range,
+cursor/completeness coverage, and live-input isolation/contamination result.
+The coverage cannot be complete if a rotated result segment is missing,
+changed, unfinished, or duplicated.
+Ordinary live capture, automatic voyage capture, and standard replay remain
+unchanged.
+
+Normal **Stop now** is disabled during this workflow. Only **Stop and build
+ZIP** can finalise the child, and it fails closed unless Logger confirms
+complete pre-indexed coverage, completes the calculation quiet period, and
+Capture copies every segment in Logger's result manifest into the ZIP.
+
+Portable download preparation is idempotent: if a voyage ZIP already contains
+every declared `captureFiles` entry, Capture serves that ZIP unchanged and does
+not depend on the original Logger files still being present.
+
+The child bundle's compact DR track and copied DR Plotter fixes retain
+operational/integrity assurance, comparison availability, GPS dependence,
+leeway/current origin, and Navigation Reference provenance. Missing numeric
+evidence remains `null`, not a fabricated zero.
 
 Version `0.5.18` uses AJRM Marine Traffic's `voyageState` projection plus both
 speed over ground and speed through water when deciding whether automatic
@@ -133,4 +186,3 @@ Development assistance: OpenAI Codex helped with code generation, refactoring, a
 This software is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). You may use, study, share, and modify it under that licence. If you modify it and make it available to users over a network, the corresponding source code must also be made available under the AGPL.
 
 Commercial licensing is available by arrangement for organisations that want different terms.
-

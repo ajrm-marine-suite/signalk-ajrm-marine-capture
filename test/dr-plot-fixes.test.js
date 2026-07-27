@@ -20,6 +20,16 @@ test("filters DR Plotter fixes to the voyage time window", () => {
       plotType: "gps-lost",
       trust: "lost",
       drSource: "heading-stw-current",
+      drGpsDependent: false,
+      drLeewayStatus: "unknown",
+      drCurrentOrigin: "independent-current",
+      integrityAssurance: "reduced",
+      integrityComparisonAvailable: false,
+      integrityUnavailableReason: "Independent current is unavailable.",
+      referenceKind: "heading",
+      referenceSource: "YDEN.4",
+      referenceUncertaintyDegrees: 5,
+      referenceGpsDependent: false,
       distanceFromLastTrustedFixMeters: "42",
     },
     {
@@ -62,6 +72,12 @@ test("filters DR Plotter fixes to the voyage time window", () => {
   assert.equal(fixes[0].plotType, "gps-lost");
   assert.equal(fixes[0].position.latitude, 56.2);
   assert.equal(fixes[0].distanceFromLastTrustedFixMeters, 42);
+  assert.equal(fixes[0].drGpsDependent, false);
+  assert.equal(fixes[0].integrityComparisonAvailable, false);
+  assert.equal(fixes[0].integrityUnavailableReason, "Independent current is unavailable.");
+  assert.equal(fixes[0].referenceKind, "heading");
+  assert.equal(fixes[0].referenceSource, "YDEN.4");
+  assert.equal(fixes[0].referenceUncertaintyDegrees, 5);
   assert.equal(fixes[1].plotType, "observed-fix");
   assert.equal(fixes[1].note, "bearing fix");
   assert.equal(fixes[2].plotType, "gps-return");
@@ -85,4 +101,73 @@ test("normalizes DR Plotter fixes without a voyage filter", () => {
   assert.equal(fixes.length, 2);
   assert.equal(fixes[0].timestamp, "2026-06-29T10:00:00.000Z");
   assert.equal(fixes[1].timestamp, "2026-06-29T10:05:00.000Z");
+  assert.equal(fixes[0].uncertaintyRadiusMeters, null);
+  assert.equal(fixes[0].integrityAgeSeconds, null);
+});
+
+test("compact DR track preserves assurance and navigation-reference provenance", () => {
+  const sample = _private.drTrackSample({
+    timestamp: "2026-07-16T09:05:00.000Z",
+    trust: "normal",
+    acceptedGps: true,
+    gps: {
+      position: { latitude: 55.88, longitude: -5.72 },
+    },
+    operationalDeadReckoning: {
+      position: { latitude: 55.88, longitude: -5.72 },
+      source: "gps-locked",
+      uncertaintyRadiusMeters: null,
+      gpsDependent: true,
+      leewayStatus: "unknown",
+      currentOrigin: "none",
+    },
+    integrityDeadReckoning: {
+      position: { latitude: 55.8801, longitude: -5.7201 },
+      source: "heading-stw",
+      assurance: "reduced",
+      comparisonAvailable: false,
+      unavailableReason: "Independent current is unavailable.",
+      gpsDependent: false,
+      leewayStatus: "unknown",
+      provenance: {
+        heading: {
+          source: "YDEN.4",
+          method: "magnetic-heading-plus-wmm",
+          uncertaintyRad: 0.087,
+          gpsDependent: false,
+        },
+      },
+    },
+    integrityAssurance: {
+      status: "reduced",
+      comparisonAvailable: false,
+      reason: "Independent current is unavailable.",
+      leewayStatus: "unknown",
+    },
+    navigationProvenance: {
+      navigationReference: {
+        contract: "ajrm-marine-navigation-reference",
+        schemaVersion: 1,
+        status: "heading",
+        clockReference: {
+          kind: "heading",
+          source: "YDEN.4",
+          method: "magnetic-heading-plus-wmm",
+          ageMs: 250,
+          uncertaintyRad: 0.087,
+          gpsDependent: false,
+        },
+      },
+    },
+  });
+
+  assert.equal(sample.integrity.comparisonAvailable, false);
+  assert.equal(sample.integrity.provenance.heading.source, "YDEN.4");
+  assert.equal(sample.integrityAssurance.status, "reduced");
+  assert.equal(sample.navigationReference.clockReference.kind, "heading");
+  assert.equal(sample.navigationReference.clockReference.ageMs, 250);
+  assert.equal(
+    sample.navigationReference.clockReference.uncertaintyRad,
+    0.087,
+  );
 });

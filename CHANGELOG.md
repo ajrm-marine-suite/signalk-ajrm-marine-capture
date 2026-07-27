@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1
+
+- Capture strict sensor-source replays into a new portable recomputed child
+  voyage without modifying the original voyage bundle.
+- Record parent lineage, source allowlist, replay coverage, isolation, timing,
+  and recomputation provenance in the child manifest and compact DR evidence.
+- Finalise a recomputed voyage only after all source segments have been covered
+  and downstream calculators have completed their quiet-period flush.
+- Disable and reject the ordinary voyage-stop path during recomputation, then
+  fail closed if Logger does not confirm complete prepared coverage or Capture
+  cannot copy a result segment into the child ZIP.
+- Require Logger's explicit rotated-result segment manifest and copy every
+  declared file by exact name and byte size; reject missing, changed,
+  unfinished, or duplicate segments instead of inferring them by time range.
+- Serve already-portable voyage ZIPs unchanged when their declared capture
+  files are embedded, keeping repeated downloads valid after external Logger
+  references have been removed.
+
 ## 0.5.29
 
 - Rename Capture review diagnostics from legacy Engine wording to Traffic
