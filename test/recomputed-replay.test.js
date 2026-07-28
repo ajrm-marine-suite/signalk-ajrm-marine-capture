@@ -15,6 +15,64 @@ test("recomputed replay start and stop builds a portable child voyage with audit
   const loggerDirectory = path.join(root, "logger");
   const capturesDirectory = path.join(loggerDirectory, "captures");
   await fs.mkdir(capturesDirectory, { recursive: true });
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const parentObservation = {
+    schemaVersion: 1,
+    id: "observation-parent",
+    voyageId: "voyage-20260716T090451Z",
+    recordedAt: "2026-07-16T09:30:00.000Z",
+    voyageElapsedSeconds: 1509,
+    replayOriginalAt: null,
+    replayOriginalAtSource: null,
+    source: "ajrm-marine-display",
+    text: "Parent voyage observation",
+    evidence: {
+      requested: true,
+      captured: true,
+      fileName: "observations/evidence/parent-snapshot.json",
+      snapshotPreset: "debug",
+    },
+    evidenceError: null,
+  };
+  const unsafeParentObservation = {
+    ...parentObservation,
+    id: "observation-parent-unsafe",
+    recordedAt: "2026-07-16T09:31:00.000Z",
+    text: "Parent observation with an unsafe evidence reference",
+    evidence: {
+      ...parentObservation.evidence,
+      fileName: "../outside-parent-snapshot.json",
+    },
+  };
+  const parentZip = new AdmZip();
+  parentZip.addFile(
+    "index.json",
+    Buffer.from(
+      JSON.stringify({
+        id: "voyage-20260716T090451Z",
+        observations: {
+          schemaVersion: 1,
+          fileName: "observations/observations.jsonl",
+          count: 2,
+        },
+      }),
+    ),
+  );
+  parentZip.addFile(
+    "observations/observations.jsonl",
+    Buffer.from(
+      `${JSON.stringify(parentObservation)}\n${JSON.stringify(unsafeParentObservation)}\n`,
+    ),
+  );
+  parentZip.addFile(
+    "observations/evidence/parent-snapshot.json",
+    Buffer.from(
+      `${JSON.stringify({ schemaVersion: 1, observationId: "observation-parent" })}\n`,
+    ),
+  );
+  parentZip.writeZip(
+    path.join(voyageDirectory, "voyage-20260716T090451Z.zip"),
+  );
   const now = new Date();
   const from = new Date(now.getTime() - 1000).toISOString();
   const to = new Date(now.getTime() + 60000).toISOString();
@@ -128,6 +186,7 @@ test("recomputed replay start and stop builds a portable child voyage with audit
       captureFrom: "2026-07-16T08:34:51.000Z",
       captureTo: "2026-07-16T10:27:00.000Z",
       current: "2026-07-16T08:57:51.000Z",
+      originalCapturedAt: "2026-07-16T08:57:51.000Z",
       cursor: 0,
       startCursor: 0,
       totalLines: 2,
@@ -222,6 +281,20 @@ test("recomputed replay start and stop builds a portable child voyage with audit
       started.body.voyage.recomputedReplay.parentVoyage,
       "voyage-20260716T090451Z.zip",
     );
+    const captureApi =
+      globalThis[Symbol.for("mcdonaldajr.ajrmMarineCaptureApi")];
+    const observation = await captureApi.appendObservation({
+      text: "Child replay observation",
+      source: "ajrm-marine-display",
+    });
+    assert.equal(
+      observation.replayOriginalAt,
+      "2026-07-16T08:57:51.000Z",
+    );
+    assert.equal(
+      observation.replayOriginalAtSource,
+      "logger.playback.originalCapturedAt",
+    );
     const rejectedOrdinaryStop = await invoke(
       routes,
       "POST",
@@ -304,6 +377,47 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     assert.equal(index.recomputedReplay.result.sourceFilterStats.valuesExcluded, 1);
     assert.equal(index.recomputedReplay.result.coverage.complete, true);
     assert.deepEqual(index.captureFiles, captureFileNames);
+    assert.equal(index.observations.count, 1);
+    assert.equal(index.observations.parentLog.count, 2);
+    assert.equal(index.observations.parentLog.lineageOnly, true);
+    assert.equal(
+      index.observations.parentLog.evidenceAvailableInParentCount,
+      1,
+    );
+    const parentLineage = zip
+      .readAsText("observations/parent-observations.jsonl")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(parentLineage[0].evidence.captured, false);
+    assert.equal(parentLineage[0].evidence.fileName, null);
+    assert.deepEqual(parentLineage[0].lineage, {
+      parentVoyage: "voyage-20260716T090451Z.zip",
+      lineageOnly: true,
+      parentEvidenceAvailable: true,
+      parentEvidenceFileName:
+        "observations/evidence/parent-snapshot.json",
+      parentEvidenceUnavailableReason: null,
+    });
+    assert.equal(parentLineage[1].evidence.captured, false);
+    assert.equal(parentLineage[1].evidence.fileName, null);
+    assert.deepEqual(parentLineage[1].lineage, {
+      parentVoyage: "voyage-20260716T090451Z.zip",
+      lineageOnly: true,
+      parentEvidenceAvailable: false,
+      parentEvidenceFileName: null,
+      parentEvidenceUnavailableReason:
+        "Parent observation referenced missing or unsafe Snapshot evidence",
+    });
+    assert.equal(
+      zip.getEntry("observations/evidence/parent-snapshot.json"),
+      null,
+      "parent evidence must not appear as a dangling child evidence path",
+    );
+    assert.match(
+      zip.readAsText("observations/observations.jsonl"),
+      /Child replay observation/,
+    );
     assert.deepEqual(
       index.recomputedReplay.result.resultSegments.segments.map(
         (segment) => segment.fileName,

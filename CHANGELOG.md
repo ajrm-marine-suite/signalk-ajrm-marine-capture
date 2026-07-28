@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.2
+
+- Add a bounded timestamped voyage observation log for AJRM Marine Display and
+  other suite clients, with optional AJRM Marine Snapshot evidence.
+- Record wall time, voyage elapsed time, and Logger's explicit original replay
+  time when available; expose append/list/status through HTTP and the shared
+  in-process Capture API.
+- Include observations and evidence in normal, portable, and recomputed child
+  voyage ZIPs. Parent observations copied into a recomputed child are marked as
+  lineage, are not counted as child observations, and refer back to parent-only
+  Snapshot evidence only after verifying a safe entry exists, without emitting
+  dangling child paths.
+- Keep the text observation when optional Snapshot capture fails, recording a
+  bounded `evidenceError` instead of rejecting the skipper's note.
+- Treat the append-only observation text as committed even if a later
+  `index.json` or live-status refresh fails, returning a warning instead of
+  encouraging a duplicate retry.
+- Complete startup recovery before starting a new voyage, and share concurrent
+  start requests so a fresh working directory cannot be recovered or overwritten.
+
 ## 0.6.1
 
 - Capture strict sensor-source replays into a new portable recomputed child

@@ -27,6 +27,14 @@ const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoPro
 const AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH = "plugins.ajrmMarineTraffic.voyageState";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
 const DR_PLOT_FIXES_RELATIVE_PATH = "tracks/dr-plot-fixes.json";
+const OBSERVATIONS_RELATIVE_PATH = "observations/observations.jsonl";
+const OBSERVATION_EVIDENCE_DIRECTORY = "observations/evidence";
+const PARENT_OBSERVATIONS_RELATIVE_PATH =
+  "observations/parent-observations.jsonl";
+const MAX_OBSERVATION_TEXT_CHARACTERS = 2000;
+const MAX_OBSERVATIONS_PER_VOYAGE = 1000;
+const MAX_OBSERVATIONS_RETURNED = 200;
+const MAX_PARENT_OBSERVATIONS_BYTES = 5 * 1024 * 1024;
 const DR_PLOTTER_FIXES_FILE = path.join(
   os.homedir(),
   ".signalk",
@@ -81,6 +89,9 @@ module.exports = function ajrmMarineCapture(app) {
   let nextVoyageComment = "";
   let notificationSequence = 0;
   let notificationSessionId = randomUUID();
+  let observationWriteQueue = Promise.resolve();
+  let startupRecoveryPromise = Promise.resolve();
+  let startVoyagePromise = null;
   const recentEvents = [];
 
   plugin.id = "signalk-ajrm-marine-capture";
@@ -202,9 +213,9 @@ module.exports = function ajrmMarineCapture(app) {
     notificationSequence = 0;
     ensureDirectories();
     exposeCaptureApi();
-    closeIncompleteVoyagesOnStartup().catch((error) =>
-      logError("startup voyage recovery failed", error),
-    );
+    startupRecoveryPromise = closeIncompleteVoyagesOnStartup().catch((error) => {
+      logError("startup voyage recovery failed", error);
+    });
     deltaListener = (delta) => onDelta(delta);
     app.signalk.on("delta", deltaListener);
     monitorTimer = setInterval(() => {
@@ -253,6 +264,21 @@ module.exports = function ajrmMarineCapture(app) {
         res.json({ ok: true, voyages: await listVoyageBundles() });
       } catch (error) {
         res.status(500).json({ ok: false, error: error.message });
+      }
+    });
+
+    router.get("/voyage/observations", async (req, res) => {
+      try {
+        res.json(
+          await observationStatus({
+            limit: req.query?.limit,
+          }),
+        );
+      } catch (error) {
+        res.status(500).json({
+          ok: false,
+          error: "Failed to read voyage observations",
+        });
       }
     });
 
@@ -337,6 +363,23 @@ module.exports = function ajrmMarineCapture(app) {
         addEvent("comment", comment ? "Voyage comment saved" : "Voyage comment cleared");
         publishState();
         res.json({ ok: true, comment });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error.message });
+      }
+    });
+
+    router.post("/voyage/observations", async (req, res) => {
+      try {
+        const observation = await appendObservation({
+          text: req.body?.text,
+          includeSnapshot: req.body?.includeSnapshot === true,
+          source: req.body?.source,
+        });
+        res.json({
+          ok: true,
+          observation,
+          observationLog: publicObservationLog(currentVoyage?.observations),
+        });
       } catch (error) {
         res.status(400).json({ ok: false, error: error.message });
       }
@@ -667,6 +710,16 @@ module.exports = function ajrmMarineCapture(app) {
         assertOrdinaryVoyageCanStop();
         return stopVoyage(reason);
       },
+      async appendObservation({
+        text,
+        includeSnapshot = false,
+        source = "display",
+      } = {}) {
+        return appendObservation({ text, includeSnapshot, source });
+      },
+      async observations({ limit = MAX_OBSERVATIONS_RETURNED } = {}) {
+        return observationStatus({ limit });
+      },
       async prepareVoyageDownload(fileName) {
         return prepareVoyageDownload(fileName);
       },
@@ -764,7 +817,21 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function startVoyage(reason, startOptions = {}) {
+    await startupRecoveryPromise;
+    if (startVoyagePromise) return startVoyagePromise;
     if (currentVoyage) return summarizeVoyage(currentVoyage);
+    const startOperation = performVoyageStart(reason, startOptions);
+    startVoyagePromise = startOperation;
+    try {
+      return await startOperation;
+    } finally {
+      if (startVoyagePromise === startOperation) {
+        startVoyagePromise = null;
+      }
+    }
+  }
+
+  async function performVoyageStart(reason, startOptions) {
     if (loggerPlaybackActive && !startOptions.recomputedReplay) {
       throw new Error("Use Start recomputed replay while Logger playback is active");
     }
@@ -784,6 +851,10 @@ module.exports = function ajrmMarineCapture(app) {
     await fs.promises.mkdir(path.join(directory, "capture"), { recursive: true });
     await fs.promises.mkdir(path.join(directory, "system"), { recursive: true });
     await fs.promises.mkdir(path.join(directory, "tracks"), { recursive: true });
+    await fs.promises.mkdir(
+      path.join(directory, OBSERVATION_EVIDENCE_DIRECTORY),
+      { recursive: true },
+    );
 
     const movementGate = resetMovementGateForVoyageStart();
     movingSinceMs = movementGate.movingSinceMs;
@@ -802,6 +873,7 @@ module.exports = function ajrmMarineCapture(app) {
       recomputedReplay: startOptions.recomputedReplay || null,
       ajrmMarineLogger: null,
       events: [],
+      observations: createObservationLog(),
       drTrack: {
         fileName: DR_TRACK_RELATIVE_PATH,
         samples: 0,
@@ -810,6 +882,9 @@ module.exports = function ajrmMarineCapture(app) {
         stoppedAt: null,
       },
     };
+    if (currentVoyage.recomputedReplay) {
+      await copyParentObservations(currentVoyage);
+    }
     currentVoyage.drTrackStream = fs.createWriteStream(path.join(directory, DR_TRACK_RELATIVE_PATH), {
       flags: "a",
     });
@@ -877,6 +952,7 @@ module.exports = function ajrmMarineCapture(app) {
     stoppingVoyage = true;
     const voyage = currentVoyage;
     try {
+      await observationWriteQueue;
       addVoyageEvent("stop", reason);
       addEvent("voyage-stopping", `${voyage.id}: ${reason}`);
       if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
@@ -992,6 +1068,10 @@ module.exports = function ajrmMarineCapture(app) {
     const now = new Date().toISOString();
     await fs.promises.mkdir(path.join(directory, "system"), { recursive: true });
     await fs.promises.mkdir(path.join(directory, "capture"), { recursive: true });
+    await fs.promises.mkdir(
+      path.join(directory, OBSERVATION_EVIDENCE_DIRECTORY),
+      { recursive: true },
+    );
     const existingIndex = await readJson(path.join(directory, "index.json"));
     const voyage = {
       id,
@@ -1020,6 +1100,10 @@ module.exports = function ajrmMarineCapture(app) {
       captureReferences: Array.isArray(existingIndex?.captureReferences) && existingIndex.captureReferences.length
         ? existingIndex.captureReferences
         : initialCaptureReferencesFromStart(existingIndex),
+      observations: await rebuildObservationLog(
+        directory,
+        existingIndex?.observations,
+      ),
       events: Array.isArray(existingIndex?.events) ? existingIndex.events.slice(0, 200) : [],
       recoveredAt: now,
       interruptedByRestart: true,
@@ -1078,9 +1162,11 @@ module.exports = function ajrmMarineCapture(app) {
     return filePath;
   }
 
-  async function fetchAiSnapshot() {
+  async function fetchAiSnapshot(snapshotPresetOverride = null) {
     const ajrmMarineSnapshotApi = getAiSnapshotApi();
-    const snapshotPreset = options.captureMode === "debug" ? "debug" : "voyage";
+    const snapshotPreset =
+      snapshotPresetOverride ||
+      (options.captureMode === "debug" ? "debug" : "voyage");
     const snapshotOptions = {
       snapshotPreset,
     };
@@ -1091,6 +1177,273 @@ module.exports = function ajrmMarineCapture(app) {
       `snapshotPreset=${encodeURIComponent(snapshotPreset)}`,
     ].join("&");
     return httpJson("GET", `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-snapshot/snapshot?${query}`);
+  }
+
+  function appendObservation(input) {
+    const operation = observationWriteQueue.then(() =>
+      appendObservationNow(input),
+    );
+    observationWriteQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function appendObservationNow({
+    text,
+    includeSnapshot = false,
+    source = "display",
+  } = {}) {
+    if (!currentVoyage) {
+      throw new Error("Start a voyage before recording an observation");
+    }
+    if (stoppingVoyage) {
+      throw new Error("The voyage is stopping; the observation was not recorded");
+    }
+    const observationText = normalizeObservationText(text);
+    const voyage = currentVoyage;
+    voyage.observations =
+      voyage.observations || (await rebuildObservationLog(voyage.directory));
+    if (voyage.observations.count >= MAX_OBSERVATIONS_PER_VOYAGE) {
+      throw new Error(
+        `This voyage already has the maximum ${MAX_OBSERVATIONS_PER_VOYAGE} observations`,
+      );
+    }
+
+    const now = new Date();
+    const recordedAt = now.toISOString();
+    const observationId = `observation-${formatFileTime(now)}-${randomUUID().slice(0, 8)}`;
+    const replayTime = await currentReplayOriginalTime(voyage);
+    const evidence = {
+      requested: includeSnapshot === true,
+      captured: false,
+      fileName: null,
+      snapshotPreset: includeSnapshot === true ? "debug" : null,
+    };
+    let evidenceError = null;
+
+    if (includeSnapshot === true) {
+      const evidenceFileName = `${observationId}.json`;
+      const evidenceRelativePath = `${OBSERVATION_EVIDENCE_DIRECTORY}/${evidenceFileName}`;
+      try {
+        const snapshot = await fetchAiSnapshot("debug");
+        await writeJson(path.join(voyage.directory, evidenceRelativePath), {
+          schemaVersion: 1,
+          observationId,
+          recordedAt,
+          replayOriginalAt: replayTime.timestamp,
+          snapshot,
+        });
+        evidence.captured = true;
+        evidence.fileName = evidenceRelativePath;
+      } catch (error) {
+        evidenceError = boundedErrorMessage(error);
+      }
+    }
+
+    const startedAtMs = Date.parse(voyage.startedAt);
+    const record = {
+      schemaVersion: 1,
+      id: observationId,
+      voyageId: voyage.id,
+      recordedAt,
+      voyageElapsedSeconds: Number.isFinite(startedAtMs)
+        ? Math.max(0, (now.getTime() - startedAtMs) / 1000)
+        : null,
+      replayOriginalAt: replayTime.timestamp,
+      replayOriginalAtSource: replayTime.source,
+      source: normalizeObservationSource(source),
+      text: observationText,
+      evidence,
+      evidenceError,
+    };
+    const logPath = path.join(voyage.directory, OBSERVATIONS_RELATIVE_PATH);
+    await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
+    try {
+      await fs.promises.appendFile(logPath, `${JSON.stringify(record)}\n`, "utf8");
+    } catch (error) {
+      if (evidence.fileName) {
+        await fs.promises
+          .unlink(path.join(voyage.directory, evidence.fileName))
+          .catch(() => {});
+      }
+      throw error;
+    }
+
+    updateObservationLog(voyage.observations, record);
+    appendVoyageEvent(
+      voyage,
+      "observation",
+      `Observation recorded${evidence.captured ? " with snapshot evidence" : ""}`,
+    );
+    addEvent("observation", `${voyage.id}: observation recorded`);
+    const postCommitWarnings = [];
+    try {
+      await writeVoyageIndex(voyage);
+    } catch (error) {
+      const warning = `Observation text is safe, but index.json was not refreshed: ${boundedErrorMessage(error)}`;
+      postCommitWarnings.push(warning);
+      try {
+        app.error?.(`[${plugin.id}] ${warning}`);
+      } catch {
+        // The observation is already durable; diagnostic logging must not
+        // turn a committed note into an apparent failed request.
+      }
+      appendVoyageEvent(voyage, "observation-index-warning", warning);
+    }
+    try {
+      publishState();
+    } catch (error) {
+      const warning = `Observation text is safe, but live status was not refreshed: ${boundedErrorMessage(error)}`;
+      postCommitWarnings.push(warning);
+      try {
+        app.error?.(`[${plugin.id}] ${warning}`);
+      } catch {
+        // Preserve the successful append even if the host logger is faulty.
+      }
+    }
+    return postCommitWarnings.length
+      ? { ...record, postCommitWarning: postCommitWarnings.join(" ") }
+      : record;
+  }
+
+  async function observationStatus({ limit } = {}) {
+    if (!currentVoyage) {
+      return {
+        ok: true,
+        active: false,
+        voyage: null,
+        observationLog: null,
+        observations: [],
+        limits: observationLimits(),
+        observationCapabilities: buildObservationCapabilities(),
+      };
+    }
+    const records = await readObservationRecords(
+      path.join(currentVoyage.directory, OBSERVATIONS_RELATIVE_PATH),
+      normalizeObservationLimit(limit),
+    );
+    return {
+      ok: true,
+      active: true,
+      voyage: {
+        id: currentVoyage.id,
+        startedAt: currentVoyage.startedAt,
+        recomputedReplay: currentVoyage.recomputedReplay || null,
+      },
+      observationLog: publicObservationLog(currentVoyage.observations),
+      observations: records.reverse(),
+      limits: observationLimits(),
+      observationCapabilities: buildObservationCapabilities(),
+    };
+  }
+
+  function buildObservationCapabilities() {
+    const snapshotApi = getAiSnapshotApi();
+    return {
+      available: true,
+      requiresActiveVoyage: true,
+      snapshotAvailable: typeof snapshotApi?.snapshot === "function",
+      snapshotIntegration:
+        typeof snapshotApi?.snapshot === "function"
+          ? "in-process"
+          : "http-fallback-unverified",
+      parentReplayLineageSupported: true,
+      ...observationLimits(),
+    };
+  }
+
+  async function currentReplayOriginalTime(voyage) {
+    if (!voyage?.recomputedReplay) {
+      return { timestamp: null, source: null };
+    }
+    const status = await getAjrmMarineLoggerStatus().catch(() => null);
+    const playback =
+      status?.playback && typeof status.playback === "object"
+        ? status.playback
+        : loggerPlayback;
+    const explicitOriginalCapturedAt = normalizeIsoTimestamp(
+      playback?.originalCapturedAt,
+    );
+    if (explicitOriginalCapturedAt) {
+      return {
+        timestamp: explicitOriginalCapturedAt,
+        source: "logger.playback.originalCapturedAt",
+      };
+    }
+    const explicitCursorTime = normalizeIsoTimestamp(playback?.current);
+    if (explicitCursorTime) {
+      return {
+        timestamp: explicitCursorTime,
+        source: "logger.playback.current",
+      };
+    }
+    return { timestamp: null, source: null };
+  }
+
+  async function copyParentObservations(voyage) {
+    const parentFileName = safeBaseName(
+      voyage?.recomputedReplay?.parentVoyage,
+    );
+    if (!parentFileName || !parentFileName.endsWith(".zip")) return;
+    const parentPath = path.join(options.voyageDirectory, parentFileName);
+    try {
+      const zip = new AdmZip(parentPath);
+      const entry = zip.getEntry(OBSERVATIONS_RELATIVE_PATH);
+      if (!entry || entry.isDirectory) return;
+      const declaredBytes = Number(entry.header?.size || 0);
+      if (
+        declaredBytes <= 0 ||
+        declaredBytes > MAX_PARENT_OBSERVATIONS_BYTES
+      ) {
+        throw new Error("parent observation log is empty or too large");
+      }
+      const content = entry.getData();
+      if (
+        content.length <= 0 ||
+        content.length > MAX_PARENT_OBSERVATIONS_BYTES
+      ) {
+        throw new Error("parent observation log is empty or too large");
+      }
+      const records = parseObservationRecords(
+        content.toString("utf8"),
+        MAX_OBSERVATIONS_PER_VOYAGE,
+      );
+      const lineageRecords = records.map((record) =>
+        parentLineageObservation(record, parentFileName, zip),
+      );
+      const target = path.join(
+        voyage.directory,
+        PARENT_OBSERVATIONS_RELATIVE_PATH,
+      );
+      await fs.promises.writeFile(
+        target,
+        `${lineageRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+        "utf8",
+      );
+      const evidenceAvailableInParentCount = lineageRecords.filter(
+        (record) => record.lineage?.parentEvidenceAvailable === true,
+      ).length;
+      voyage.observations.parentLog = {
+        parentVoyage: parentFileName,
+        fileName: PARENT_OBSERVATIONS_RELATIVE_PATH,
+        sourceFileName: OBSERVATIONS_RELATIVE_PATH,
+        count: lineageRecords.length,
+        firstRecordedAt: lineageRecords[0]?.recordedAt || null,
+        lastRecordedAt: lineageRecords.at(-1)?.recordedAt || null,
+        evidenceAvailableInParentCount,
+        copiedAt: new Date().toISOString(),
+      };
+      appendVoyageEvent(
+        voyage,
+        "parent-observations",
+        `${lineageRecords.length} parent observation${lineageRecords.length === 1 ? "" : "s"} copied as replay lineage`,
+      );
+    } catch (error) {
+      appendVoyageEvent(
+        voyage,
+        "parent-observations-warning",
+        `Parent observation lineage was not copied: ${boundedErrorMessage(error)}`,
+      );
+    }
   }
 
   function shouldTakeSnapshot(label) {
@@ -1427,6 +1780,7 @@ module.exports = function ajrmMarineCapture(app) {
       },
       captureFiles: voyage.captureFiles || [],
       captureReferences: voyage.captureReferences || [],
+      observations: publicObservationLog(voyage.observations),
       drTrack: voyage.drTrack || null,
       drPlotFixes: voyage.drPlotFixes || null,
       captureIndex,
@@ -1435,6 +1789,8 @@ module.exports = function ajrmMarineCapture(app) {
       hints: [
         "Start with index.json.",
         "Read snapshots/start and snapshots/stop before opening large capture logs.",
+        `Read ${OBSERVATIONS_RELATIVE_PATH} for timestamped skipper observations; optional structured Snapshot evidence is referenced from each observation.`,
+        `For a recomputed child, ${PARENT_OBSERVATIONS_RELATIVE_PATH} is lineage copied from the parent and is not counted as a child observation. Verified parent Snapshot evidence stays in the named parent voyage and lineage records contain no dangling child paths.`,
         "Use snapshot timestamps and capture metadata to locate interesting intervals.",
         "Use tracks/dr-plot-fixes.json for navigator-style timed, manual, observed, GPS-lost, and GPS-return DR plot fixes when present.",
         "Capture files may contain AJRM Marine Logger backfill followed by live records. Use captureIndex for timestamp order, overlap and duplicate guidance before scanning large logs.",
@@ -1717,6 +2073,11 @@ module.exports = function ajrmMarineCapture(app) {
       captureMode: options.captureMode,
       captureFileMode: options.captureFileMode,
       currentVoyage: currentVoyage ? summarizeVoyage(currentVoyage) : null,
+      observationLog: currentVoyage
+        ? publicObservationLog(currentVoyage.observations)
+        : null,
+      observationLimits: observationLimits(),
+      observationCapabilities: buildObservationCapabilities(),
       voyageComment: currentVoyage
         ? currentVoyage.comment || ""
         : nextVoyageComment || defaultVoyageComment({
@@ -1769,6 +2130,14 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.currentVoyage.startedAt", value: currentVoyage?.startedAt || null },
       { path: "plugins.ajrmMarineCapture.currentVoyage.comment", value: currentVoyage?.comment || null },
       { path: "plugins.ajrmMarineCapture.currentVoyage.snapshotCount", value: currentVoyage?.snapshotCount || 0 },
+      {
+        path: "plugins.ajrmMarineCapture.currentVoyage.observationCount",
+        value: currentVoyage?.observations?.count || 0,
+      },
+      {
+        path: "plugins.ajrmMarineCapture.currentVoyage.lastObservationAt",
+        value: currentVoyage?.observations?.lastRecordedAt || null,
+      },
       {
         path: "plugins.ajrmMarineCapture.currentVoyage.recomputedReplay",
         value: currentVoyage?.recomputedReplay || null,
@@ -1883,6 +2252,7 @@ module.exports = function ajrmMarineCapture(app) {
       reason: voyage.reason,
       comment: voyage.comment || "",
       snapshotCount: voyage.snapshotCount,
+      observationLog: publicObservationLog(voyage.observations),
       captureMode: voyage.captureMode || options.captureMode,
       captureFileMode: voyage.captureFileMode || options.captureFileMode,
       recomputedReplay: voyage.recomputedReplay || null,
@@ -2049,6 +2419,277 @@ module.exports = function ajrmMarineCapture(app) {
     );
   }
 };
+
+function createObservationLog() {
+  return {
+    schemaVersion: 1,
+    fileName: OBSERVATIONS_RELATIVE_PATH,
+    count: 0,
+    evidenceCount: 0,
+    evidenceErrorCount: 0,
+    firstRecordedAt: null,
+    lastRecordedAt: null,
+    parentLog: null,
+  };
+}
+
+async function rebuildObservationLog(directory, existing = null) {
+  const records = await readObservationRecords(
+    path.join(directory, OBSERVATIONS_RELATIVE_PATH),
+    MAX_OBSERVATIONS_PER_VOYAGE,
+  );
+  const result = createObservationLog();
+  for (const record of records) updateObservationLog(result, record);
+  if (existing?.parentLog && typeof existing.parentLog === "object") {
+    result.parentLog = {
+      parentVoyage: stringOrNull(existing.parentLog.parentVoyage),
+      fileName: stringOrNull(existing.parentLog.fileName),
+      sourceFileName: stringOrNull(existing.parentLog.sourceFileName),
+      count: Math.max(0, Math.trunc(Number(existing.parentLog.count) || 0)),
+      firstRecordedAt: normalizeIsoTimestamp(
+        existing.parentLog.firstRecordedAt,
+      ),
+      lastRecordedAt: normalizeIsoTimestamp(existing.parentLog.lastRecordedAt),
+      evidenceAvailableInParentCount: Math.max(
+        0,
+        Math.trunc(
+          Number(existing.parentLog.evidenceAvailableInParentCount) || 0,
+        ),
+      ),
+      copiedAt: normalizeIsoTimestamp(existing.parentLog.copiedAt),
+    };
+  }
+  return result;
+}
+
+function updateObservationLog(log, record) {
+  if (!log || !record) return;
+  log.count = Math.max(0, Number(log.count) || 0) + 1;
+  if (record.evidence?.captured === true) {
+    log.evidenceCount = Math.max(0, Number(log.evidenceCount) || 0) + 1;
+  }
+  if (record.evidence?.requested === true && record.evidenceError) {
+    log.evidenceErrorCount =
+      Math.max(0, Number(log.evidenceErrorCount) || 0) + 1;
+  }
+  if (!log.firstRecordedAt) log.firstRecordedAt = record.recordedAt;
+  log.lastRecordedAt = record.recordedAt;
+}
+
+function publicObservationLog(value) {
+  if (!value || typeof value !== "object") return null;
+  const parent =
+    value.parentLog && typeof value.parentLog === "object"
+      ? {
+          parentVoyage: stringOrNull(value.parentLog.parentVoyage),
+          fileName: stringOrNull(value.parentLog.fileName),
+          sourceFileName: stringOrNull(value.parentLog.sourceFileName),
+          count: Math.max(0, Math.trunc(Number(value.parentLog.count) || 0)),
+          firstRecordedAt: normalizeIsoTimestamp(
+            value.parentLog.firstRecordedAt,
+          ),
+          lastRecordedAt: normalizeIsoTimestamp(value.parentLog.lastRecordedAt),
+          evidenceAvailableInParentCount: Math.max(
+            0,
+            Math.trunc(
+              Number(value.parentLog.evidenceAvailableInParentCount) || 0,
+            ),
+          ),
+          copiedAt: normalizeIsoTimestamp(value.parentLog.copiedAt),
+          lineageOnly: true,
+        }
+      : null;
+  return {
+    schemaVersion: 1,
+    fileName: OBSERVATIONS_RELATIVE_PATH,
+    count: Math.max(0, Math.trunc(Number(value.count) || 0)),
+    evidenceCount: Math.max(
+      0,
+      Math.trunc(Number(value.evidenceCount) || 0),
+    ),
+    evidenceErrorCount: Math.max(
+      0,
+      Math.trunc(Number(value.evidenceErrorCount) || 0),
+    ),
+    firstRecordedAt: normalizeIsoTimestamp(value.firstRecordedAt),
+    lastRecordedAt: normalizeIsoTimestamp(value.lastRecordedAt),
+    parentLog: parent,
+  };
+}
+
+async function readObservationRecords(filePath, limit) {
+  const safeLimit = normalizeObservationLimit(limit);
+  const text = await fs.promises.readFile(filePath, "utf8").catch((error) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  return parseObservationRecords(text, safeLimit);
+}
+
+function parseObservationRecords(text, limit = MAX_OBSERVATIONS_PER_VOYAGE) {
+  const records = [];
+  const safeLimit = normalizeObservationLimit(limit);
+  for (const line of String(text || "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = sanitizeObservationRecord(value);
+    if (record) records.push(record);
+    if (records.length > safeLimit) records.shift();
+  }
+  return records;
+}
+
+function sanitizeObservationRecord(value) {
+  if (!value || typeof value !== "object") return null;
+  const id =
+    typeof value.id === "string" && value.id.trim()
+      ? value.id.trim().slice(0, 120)
+      : null;
+  const voyageId =
+    typeof value.voyageId === "string" && value.voyageId.trim()
+      ? value.voyageId.trim().slice(0, 120)
+      : null;
+  const recordedAt = normalizeIsoTimestamp(value.recordedAt);
+  if (!id || !voyageId || !recordedAt) return null;
+  let text;
+  try {
+    text = normalizeObservationText(value.text);
+  } catch {
+    return null;
+  }
+  const evidenceValue =
+    value.evidence && typeof value.evidence === "object"
+      ? value.evidence
+      : {};
+  return {
+    schemaVersion: 1,
+    id,
+    voyageId,
+    recordedAt,
+    voyageElapsedSeconds: numberOrNull(value.voyageElapsedSeconds),
+    replayOriginalAt: normalizeIsoTimestamp(value.replayOriginalAt),
+    replayOriginalAtSource: stringOrNull(value.replayOriginalAtSource),
+    source: normalizeObservationSource(value.source),
+    text,
+    evidence: {
+      requested: evidenceValue.requested === true,
+      captured: evidenceValue.captured === true,
+      fileName: stringOrNull(evidenceValue.fileName),
+      snapshotPreset: stringOrNull(evidenceValue.snapshotPreset),
+    },
+    evidenceError: longStringOrNull(
+      value.evidenceError || evidenceValue.error,
+    ),
+  };
+}
+
+function parentLineageObservation(record, parentVoyage, parentZip) {
+  const referencedEvidenceFileName =
+    record?.evidence?.captured === true
+      ? stringOrNull(record.evidence.fileName)
+      : null;
+  const safeEvidenceFileName = safeParentEvidenceFileName(
+    referencedEvidenceFileName,
+  );
+  const evidenceEntry = safeEvidenceFileName
+    ? parentZip?.getEntry(safeEvidenceFileName)
+    : null;
+  const parentEvidenceAvailable = Boolean(
+    evidenceEntry && evidenceEntry.isDirectory !== true,
+  );
+  const parentEvidenceUnavailableReason =
+    referencedEvidenceFileName && !parentEvidenceAvailable
+      ? "Parent observation referenced missing or unsafe Snapshot evidence"
+      : null;
+  return {
+    ...record,
+    evidence: {
+      ...record.evidence,
+      captured: false,
+      fileName: null,
+    },
+    lineage: {
+      parentVoyage,
+      lineageOnly: true,
+      parentEvidenceAvailable,
+      parentEvidenceFileName: parentEvidenceAvailable
+        ? safeEvidenceFileName
+        : null,
+      parentEvidenceUnavailableReason,
+    },
+  };
+}
+
+function safeParentEvidenceFileName(value) {
+  const fileName = stringOrNull(value);
+  if (
+    !fileName ||
+    fileName.includes("\\") ||
+    fileName.startsWith("/") ||
+    path.posix.normalize(fileName) !== fileName ||
+    !fileName.startsWith(`${OBSERVATION_EVIDENCE_DIRECTORY}/`)
+  ) {
+    return null;
+  }
+  return fileName;
+}
+
+function normalizeObservationText(value) {
+  if (typeof value !== "string") {
+    throw new Error("Observation text is required");
+  }
+  const text = value
+    .normalize("NFC")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+  if (!text) throw new Error("Observation text is required");
+  if (text.length > MAX_OBSERVATION_TEXT_CHARACTERS) {
+    throw new Error(
+      `Observation text must be ${MAX_OBSERVATION_TEXT_CHARACTERS} characters or fewer`,
+    );
+  }
+  return text;
+}
+
+function normalizeObservationSource(value) {
+  const source = String(value || "unknown")
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return source || "unknown";
+}
+
+function normalizeObservationLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return MAX_OBSERVATIONS_RETURNED;
+  return Math.max(
+    1,
+    Math.min(MAX_OBSERVATIONS_PER_VOYAGE, Math.trunc(number)),
+  );
+}
+
+function observationLimits() {
+  return {
+    maximumTextCharacters: MAX_OBSERVATION_TEXT_CHARACTERS,
+    maximumObservationsPerVoyage: MAX_OBSERVATIONS_PER_VOYAGE,
+    maximumReturned: MAX_OBSERVATIONS_RETURNED,
+  };
+}
+
+function boundedErrorMessage(error) {
+  const message =
+    error && typeof error.message === "string"
+      ? error.message
+      : String(error || "unknown error");
+  return message.trim().slice(0, 300) || "unknown error";
+}
 
 function filterDrPlotFixesForVoyage(plotFixes, startedAt, stoppedAt) {
   const startMs = Date.parse(startedAt);
@@ -2602,6 +3243,7 @@ async function listVoyageBundlesInDirectory(directory) {
       startedAt: index?.startedAt || null,
       stoppedAt: index?.stoppedAt || null,
       recomputedReplay: index?.recomputedReplay || null,
+      observationLog: publicObservationLog(index?.observations),
       downloadUrl: `/plugins/signalk-ajrm-marine-capture/voyages/${encodeURIComponent(entry.name)}/download`,
     });
   }
@@ -3156,7 +3798,10 @@ module.exports._private = {
   filterDrPlotFixesForVoyage,
   nextMovementGateState,
   normalizeDrPlotFixes,
+  normalizeObservationText,
   normalizeTrafficProfile,
+  parseObservationRecords,
+  publicObservationLog,
   reconcilePortableCaptureReferences,
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,

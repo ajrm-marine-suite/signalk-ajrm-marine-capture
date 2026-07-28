@@ -10,6 +10,56 @@ takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, st
 when the vessel has stopped, and writes an indexed voyage bundle for later
 analysis, replay, and debugging.
 
+## Timestamped voyage observations
+
+AJRM Marine Display can append skipper observations to the active voyage
+through Capture. Each observation records:
+
+- bounded plain text (maximum 2,000 characters);
+- the wall-clock recording time and elapsed voyage time;
+- Logger's explicit original replay timestamp when one is available; and
+- optional structured AJRM Marine Snapshot evidence using the `debug` preset.
+
+Snapshot evidence is useful when reporting a transient display or calculation
+problem, but it is not allowed to lose the text note: if Snapshot is
+unavailable, Capture saves the observation with a bounded `evidenceError`.
+
+The HTTP contract is:
+
+```text
+GET  /plugins/signalk-ajrm-marine-capture/voyage/observations
+POST /plugins/signalk-ajrm-marine-capture/voyage/observations
+```
+
+The POST body is:
+
+```json
+{
+  "text": "Turn indicator remained after the target sent null ROT.",
+  "includeSnapshot": true,
+  "source": "ajrm-marine-display"
+}
+```
+
+An active voyage is required. Suite plugins can use the equivalent
+`app.ajrmMarineCaptureApi.appendObservation(...)` method and inspect
+`observationCapabilities` from `app.ajrmMarineCaptureApi.status()`.
+
+The ZIP contains child observations at
+`observations/observations.jsonl`; optional evidence files live below
+`observations/evidence/`. `index.json` records the count, evidence count and
+time range. Portable download rebuilding preserves those files.
+
+During a recomputed replay, observations entered while testing belong to the
+new child voyage and carry the explicit original Logger cursor time when
+available. If the parent has an observation log, Capture copies it to
+`observations/parent-observations.jsonl` as lineage only. Parent records are
+never counted or presented as child observations. Snapshot paths in the
+lineage copy are rewritten as unavailable in the child, with an explicit
+reference back to a safe evidence entry that Capture verified exists in the
+parent voyage. The evidence itself remains authoritative in the parent ZIP and
+no dangling child evidence path is emitted.
+
 ## Recomputed voyage replay
 
 Capture can explicitly record a new portable child voyage while AJRM Marine
@@ -179,6 +229,10 @@ announce them through the normal notification pipeline.
 ## Public Beta
 
 Voyage capture and diagnostic bundle builder for AJRM Marine Suite testing.
+
+AJRM Marine Capture is authored and maintained by Anthony McDonald, with
+assistance from William McAusland. It builds on the Signal K project and the
+work of Signal K plugin authors.
 
 Development assistance: OpenAI Codex helped with code generation, refactoring, and automated testing during the beta development cycle.
 ## License and commercial use
