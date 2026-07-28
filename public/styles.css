@@ -27,6 +27,10 @@ header {
   justify-content: space-between;
 }
 
+.actions {
+  flex-wrap: wrap;
+}
+
 h1,
 h2,
 h3,
@@ -144,6 +148,14 @@ textarea {
 
 .replay-capture h3 {
   margin-bottom: 8px;
+}
+
+.replay-status {
+  margin: 12px 0;
+}
+
+.replay-status dd {
+  overflow-wrap: anywhere;
 }
 
 .field-note {

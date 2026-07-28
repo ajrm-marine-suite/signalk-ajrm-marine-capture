@@ -7,6 +7,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const AdmZip = require("adm-zip");
 const createPlugin = require("../plugin");
 
 test("voyage starts wait for startup recovery and concurrent callers share one start", async () => {
@@ -163,6 +164,191 @@ test("voyage starts wait for startup recovery and concurrent callers share one s
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("startup recovery preserves only bounded partial recomputed segments and marks the ZIP unverified", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-recomputed-recovery-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  const now = new Date();
+  const voyageStartedAt = new Date(now.getTime() - 2 * 60 * 1000);
+  const voyageId = `voyage-${voyageStartedAt.toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z")}`;
+  const workingDirectory = path.join(voyageDirectory, voyageId);
+  await fs.mkdir(path.join(workingDirectory, "capture"), { recursive: true });
+  const firstFileName = captureName(voyageStartedAt);
+  const rotatedFileName = captureName(
+    new Date(voyageStartedAt.getTime() + 60 * 1000),
+  );
+  const corruptPartialFileName = `${captureName(
+    new Date(voyageStartedAt.getTime() + 90 * 1000),
+  )}.gz`;
+  const beforeFileName = captureName(
+    new Date(voyageStartedAt.getTime() - 10 * 60 * 1000),
+  );
+  const futureFileName = captureName(
+    new Date(now.getTime() + 10 * 60 * 1000),
+  );
+  for (const [fileName, capturedAt] of [
+    [firstFileName, voyageStartedAt],
+    [rotatedFileName, new Date(voyageStartedAt.getTime() + 60 * 1000)],
+    [beforeFileName, new Date(voyageStartedAt.getTime() - 10 * 60 * 1000)],
+    [futureFileName, new Date(now.getTime() + 10 * 60 * 1000)],
+  ]) {
+    await fs.writeFile(
+      path.join(capturesDirectory, fileName),
+      `${JSON.stringify({
+        capturedAt: capturedAt.toISOString(),
+        originalCapturedAt: "2026-07-16T09:04:12.000Z",
+        replayRole: "sensor-input",
+        delta: {
+          context: "vessels.self",
+          updates: [{
+            $source: "YDEN.2",
+            timestamp: capturedAt.toISOString(),
+            values: [{
+              path: "navigation.speedOverGround",
+              value: 2,
+            }],
+          }],
+        },
+      })}\n`,
+    );
+  }
+  await fs.writeFile(
+    path.join(capturesDirectory, corruptPartialFileName),
+    Buffer.from("not a valid gzip stream"),
+  );
+  await fs.writeFile(
+    path.join(workingDirectory, "index.json"),
+    `${JSON.stringify({
+      id: voyageId,
+      startedAt: voyageStartedAt.toISOString(),
+      startReason: "recomputed replay",
+      captureMode: "minimal",
+      captureFileMode: "portable",
+      comment: "Interrupted recomputation",
+      recomputedReplay: {
+        schemaVersion: 1,
+        kind: "recomputed-replay",
+        parentVoyage: "voyage-parent.zip",
+        playbackMode: "sensor-only",
+        rate: 1,
+        sourcePolicy: {
+          id: "strict-recorded-sensor-source-allowlist-v1",
+          resolvedSensorSourceIds: ["YDEN.2"],
+        },
+      },
+      ajrmMarineLogger: {
+        start: {
+          ok: true,
+          recording: {
+            active: true,
+            kind: "recomputed-replay",
+            fileName: firstFileName,
+            startedAt: voyageStartedAt.toISOString(),
+            from: voyageStartedAt.toISOString(),
+          },
+        },
+      },
+      captureReferences: [],
+      observations: {
+        schemaVersion: 1,
+        fileName: "observations/observations.jsonl",
+        count: 0,
+      },
+      events: [],
+    }, null, 2)}\n`,
+  );
+
+  const app = fakeApp({
+    async status() {
+      return { ok: true, playback: { loaded: false }, captures: [] };
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+  });
+  const plugin = createPlugin(app);
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: true,
+  });
+
+  try {
+    const zipPath = path.join(voyageDirectory, `${voyageId}.zip`);
+    await waitForFile(zipPath);
+    const zip = new AdmZip(zipPath);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.interruptedByRestart, true);
+    assert.equal(index.incomplete, true);
+    assert.equal(index.recomputationVerified, false);
+    assert.equal(index.aborted, false);
+    assert.equal(index.recomputedReplay.incomplete, true);
+    assert.equal(index.recomputedReplay.verified, false);
+    assert.equal(index.recomputedReplay.interruptedByRestart, true);
+    assert.equal(index.recomputedReplay.result.coverage.complete, false);
+    assert.equal(
+      index.recomputedReplay.result.resultSegments.complete,
+      false,
+    );
+    assert.equal(
+      index.recomputedReplay.partialCaptureRecovery.verified,
+      false,
+    );
+    assert.equal(
+      index.recomputedReplay.partialCaptureRecovery.selectionMethod,
+      "known-name-or-strict-voyage-wall-time-window",
+    );
+    assert.deepEqual(index.captureFiles, [
+      corruptPartialFileName,
+      firstFileName,
+      rotatedFileName,
+    ].sort());
+    assert.match(
+      index.captureIndex.files.find(
+        (file) => file.fileName === corruptPartialFileName,
+      ).error,
+      /could not be decoded/i,
+    );
+    assert.ok(zip.getEntry(`capture/${firstFileName}`));
+    assert.ok(zip.getEntry(`capture/${rotatedFileName}`));
+    assert.ok(zip.getEntry(`capture/${corruptPartialFileName}`));
+    assert.equal(zip.getEntry(`capture/${beforeFileName}`), null);
+    assert.equal(zip.getEntry(`capture/${futureFileName}`), null);
+    const recoveryStatus = JSON.parse(
+      zip.readAsText("system/recovery-status.json"),
+    );
+    assert.equal(recoveryStatus.incomplete, true);
+    assert.equal(recoveryStatus.recomputationVerified, false);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+function captureName(date) {
+  return `capture-${date.toISOString().replace(/[:.]/g, "-")}.jsonl`;
+}
+
+async function waitForFile(filePath) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const info = await fs.stat(filePath).catch(() => null);
+    if (info?.isFile()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
 
 function fakeApp(loggerApi) {
   return {

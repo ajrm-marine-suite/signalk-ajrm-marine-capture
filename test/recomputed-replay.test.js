@@ -228,6 +228,7 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     }],
   };
   let replayCaptureStarted = false;
+  let replayPlaybackStarted = false;
   let replayCaptureStopShouldFail = false;
   const app = fakeApp({
     async status() {
@@ -238,9 +239,17 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     },
     async startReplayResultCapture(metadata) {
       replayCaptureStarted = true;
+      loggerStatus.playback.resultCapture = { active: true };
       assert.equal(metadata.parentVoyage, "voyage-20260716T090451Z.zip");
       assert.equal(metadata.requestedBy, "signalk-ajrm-marine-capture");
       return recording;
+    },
+    async startPlayback(rate) {
+      replayPlaybackStarted = true;
+      assert.equal(rate, 1);
+      loggerStatus.playback.active = true;
+      loggerStatus.playback.lastReason = "playing";
+      return loggerStatus.playback;
     },
     async stopReplayResultCapture() {
       if (replayCaptureStopShouldFail) {
@@ -276,6 +285,7 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     const started = await invoke(routes, "POST", "/voyage/replay/start", {});
     assert.equal(started.statusCode, 200);
     assert.equal(replayCaptureStarted, true);
+    assert.equal(replayPlaybackStarted, true);
     assert.equal(started.body.voyage.captureFileMode, "portable");
     assert.equal(
       started.body.voyage.recomputedReplay.parentVoyage,
@@ -330,6 +340,20 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     assert.match(rejectedIncompleteCoverage.body.error, /reach the end/i);
     loggerStatus.playback.coverage.complete = true;
     loggerStatus.playback.lastReason = "end of capture";
+
+    loggerStatus.playback.lastError = {
+      message: "simulated asynchronous playback failure",
+      cursor: 2,
+    };
+    const rejectedPlaybackFailure = await invoke(
+      routes,
+      "POST",
+      "/voyage/replay/stop",
+      {},
+    );
+    assert.equal(rejectedPlaybackFailure.statusCode, 400);
+    assert.match(rejectedPlaybackFailure.body.error, /playback failed/i);
+    loggerStatus.playback.lastError = null;
 
     replayCaptureStopShouldFail = true;
     const rejectedLoggerFailure = await invoke(
@@ -432,6 +456,330 @@ test("recomputed replay start and stop builds a portable child voyage with audit
     }
   } finally {
     plugin.stop();
+  }
+});
+
+test("cancelled recomputed replay preserves finalised partial output as incomplete and unverified", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-replay-abort-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const startedAt = new Date();
+  const partialFileName =
+    `capture-${startedAt.toISOString().replace(/[:.]/g, "-")}.jsonl`;
+  const partialContent = `${JSON.stringify({
+    capturedAt: startedAt.toISOString(),
+    originalCapturedAt: "2026-07-16T09:04:12.000Z",
+    replayRole: "sensor-input",
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "YDEN.2",
+        timestamp: startedAt.toISOString(),
+        values: [{
+          path: "navigation.position",
+          value: { latitude: 55.8, longitude: -5.7 },
+        }],
+      }],
+    },
+  })}\n`;
+  await fs.writeFile(
+    path.join(capturesDirectory, partialFileName),
+    partialContent,
+  );
+  const sourcePolicy = {
+    id: "strict-recorded-sensor-source-allowlist-v1",
+    resolvedSensorSourceIds: ["YDEN.2"],
+    sensorSourceIds: ["YDEN.2"],
+  };
+  const loggerStatus = {
+    ok: true,
+    playback: {
+      loaded: true,
+      active: false,
+      paused: false,
+      mode: "sensor-sources",
+      replayMode: "sensor-only",
+      rate: 1,
+      cursor: 0,
+      startCursor: 0,
+      totalLines: 100,
+      lastReason: "loaded",
+      fileName: "capture-parent.jsonl",
+      displayFileName: "voyage-parent.zip / capture-parent.jsonl",
+      voyageFileName: "voyage-parent.zip",
+      sourcePolicy,
+      sourceCatalog: { "YDEN.2": { updates: 100, values: 100 } },
+      coverage: {
+        complete: false,
+        preparedComplete: true,
+        cursor: 0,
+        startCursor: 0,
+        totalLines: 100,
+        segmentsCompleted: 0,
+        segmentsTotal: 1,
+      },
+    },
+    captures: [],
+  };
+  let playbackStartCalls = 0;
+  let abortCalls = 0;
+  const partialSegment = {
+    index: 0,
+    fileName: partialFileName,
+    startedAt: startedAt.toISOString(),
+    from: startedAt.toISOString(),
+    to: startedAt.toISOString(),
+    lines: 1,
+    bytes: Buffer.byteLength(partialContent),
+    compressed: false,
+    finalized: true,
+    available: true,
+    error: null,
+  };
+  const replayResult = {
+    schemaVersion: 1,
+    kind: "recomputed-replay",
+    parentVoyage: "voyage-parent.zip",
+    playbackMode: "sensor-only",
+    rate: 1,
+    sourcePolicy,
+    aborted: true,
+    incomplete: true,
+    abortReason: "user cancelled recomputed replay",
+    coverage: {
+      complete: false,
+      preparedComplete: true,
+      cursor: 12,
+      totalLines: 100,
+      lastReason: "playback error",
+    },
+    resultSegments: {
+      schemaVersion: 1,
+      complete: false,
+      segmentsTotal: 1,
+      segmentsFinalized: 1,
+      lines: 1,
+      bytes: Buffer.byteLength(partialContent),
+      segments: [partialSegment],
+    },
+  };
+  const app = fakeApp({
+    async status() {
+      return loggerStatus;
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+    async startReplayResultCapture() {
+      return {
+        active: true,
+        kind: "recomputed-replay",
+        fileName: partialFileName,
+        startedAt: startedAt.toISOString(),
+      };
+    },
+    async startPlayback(rate) {
+      playbackStartCalls += 1;
+      assert.equal(rate, 1);
+      loggerStatus.playback.active = true;
+      loggerStatus.playback.lastReason = "playing";
+      return loggerStatus.playback;
+    },
+    async abortReplayResultCapture(reason) {
+      abortCalls += 1;
+      assert.equal(reason, "user cancelled recomputed replay");
+      loggerStatus.playback.active = false;
+      loggerStatus.playback.lastReason = "aborted";
+      return {
+        active: false,
+        kind: "recomputed-replay",
+        fileName: partialFileName,
+        replayResult,
+      };
+    },
+  });
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: true,
+  });
+
+  try {
+    const started = await invoke(routes, "POST", "/voyage/replay/start", {});
+    assert.equal(started.statusCode, 200);
+    assert.equal(playbackStartCalls, 1);
+    const aborted = await invoke(routes, "POST", "/voyage/replay/abort", {
+      reason: "user cancelled recomputed replay",
+    });
+    assert.equal(aborted.statusCode, 200);
+    assert.equal(abortCalls, 1);
+    assert.equal(aborted.body.bundle.format, "zip");
+
+    const zip = new AdmZip(aborted.body.bundle.path);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.incomplete, true);
+    assert.equal(index.recomputationVerified, false);
+    assert.equal(index.aborted, true);
+    assert.equal(index.interruptedByRestart, false);
+    assert.equal(index.recomputedReplay.status, "incomplete");
+    assert.equal(index.recomputedReplay.complete, false);
+    assert.equal(index.recomputedReplay.incomplete, true);
+    assert.equal(index.recomputedReplay.verified, false);
+    assert.equal(index.recomputedReplay.aborted, true);
+    assert.equal(index.recomputedReplay.result.coverage.complete, false);
+    assert.equal(index.recomputedReplay.result.resultSegments.complete, false);
+    assert.deepEqual(index.captureFiles, [partialFileName]);
+    assert.ok(zip.getEntry(`capture/${partialFileName}`));
+    assert.match(
+      index.hints.join("\n"),
+      /incomplete and unverified/i,
+    );
+    assert.equal(
+      JSON.parse(zip.readAsText("system/replay-abort-status.json")).verified,
+      false,
+    );
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("automatic playback start failure aborts the armed result capture and saves an incomplete ZIP", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-replay-start-failure-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const sourcePolicy = {
+    id: "strict-recorded-sensor-source-allowlist-v1",
+    resolvedSensorSourceIds: ["YDEN.2"],
+    sensorSourceIds: ["YDEN.2"],
+  };
+  const loggerStatus = {
+    ok: true,
+    playback: {
+      loaded: true,
+      active: false,
+      paused: false,
+      mode: "sensor-sources",
+      replayMode: "sensor-only",
+      rate: 1,
+      cursor: 0,
+      startCursor: 0,
+      totalLines: 10,
+      lastReason: "loaded",
+      fileName: "capture-parent.jsonl",
+      displayFileName: "voyage-parent.zip / capture-parent.jsonl",
+      voyageFileName: "voyage-parent.zip",
+      sourcePolicy,
+      sourceCatalog: {},
+      coverage: {
+        complete: false,
+        preparedComplete: true,
+        cursor: 0,
+        startCursor: 0,
+        totalLines: 10,
+      },
+    },
+    captures: [],
+  };
+  let abortCalls = 0;
+  const app = fakeApp({
+    async status() {
+      return loggerStatus;
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+    async startReplayResultCapture() {
+      return {
+        active: true,
+        kind: "recomputed-replay",
+        fileName: "capture-2026-07-28T10-00-00-000Z.jsonl",
+        startedAt: new Date().toISOString(),
+      };
+    },
+    async startPlayback() {
+      throw new Error("simulated playback start failure");
+    },
+    async abortReplayResultCapture(reason) {
+      abortCalls += 1;
+      assert.match(reason, /playback failed to start/i);
+      return {
+        active: false,
+        kind: "recomputed-replay",
+        replayResult: {
+          schemaVersion: 1,
+          kind: "recomputed-replay",
+          aborted: true,
+          incomplete: true,
+          abortReason: reason,
+          coverage: {
+            complete: false,
+            preparedComplete: true,
+            cursor: 0,
+            totalLines: 10,
+          },
+          resultSegments: {
+            schemaVersion: 1,
+            complete: false,
+            segmentsTotal: 0,
+            segmentsFinalized: 0,
+            lines: 0,
+            bytes: 0,
+            segments: [],
+          },
+        },
+      };
+    },
+  });
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: true,
+  });
+
+  try {
+    const started = await invoke(routes, "POST", "/voyage/replay/start", {});
+    assert.equal(started.statusCode, 400);
+    assert.match(started.body.error, /saved as incomplete, unverified ZIP/i);
+    assert.equal(abortCalls, 1);
+    const zipNames = (await fs.readdir(voyageDirectory))
+      .filter((name) => name.endsWith(".zip"));
+    assert.equal(zipNames.length, 1);
+    const index = JSON.parse(
+      new AdmZip(path.join(voyageDirectory, zipNames[0])).readAsText(
+        "index.json",
+      ),
+    );
+    assert.equal(index.incomplete, true);
+    assert.equal(index.recomputationVerified, false);
+    assert.equal(index.recomputedReplay.result.coverage.complete, false);
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.currentVoyage, null);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
   }
 });
 

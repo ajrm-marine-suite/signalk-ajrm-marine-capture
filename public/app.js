@@ -26,7 +26,12 @@ const elements = {
   stopButton: document.getElementById("stopButton"),
   startReplayCaptureButton: document.getElementById("startReplayCaptureButton"),
   stopReplayCaptureButton: document.getElementById("stopReplayCaptureButton"),
+  cancelReplayCaptureButton: document.getElementById("cancelReplayCaptureButton"),
   replayCaptureInfo: document.getElementById("replayCaptureInfo"),
+  replayPlaybackState: document.getElementById("replayPlaybackState"),
+  replayProgressValue: document.getElementById("replayProgressValue"),
+  replaySegmentsValue: document.getElementById("replaySegmentsValue"),
+  replayFinaliseValue: document.getElementById("replayFinaliseValue"),
   commentInput: document.getElementById("commentInput"),
   saveCommentButton: document.getElementById("saveCommentButton"),
 };
@@ -54,6 +59,18 @@ elements.startReplayCaptureButton.addEventListener("click", () =>
 elements.stopReplayCaptureButton.addEventListener("click", () =>
   replayRecorderCommand("stop", "/voyage/replay/stop", {}),
 );
+elements.cancelReplayCaptureButton.addEventListener("click", () => {
+  const parentVoyage = latestStatus?.currentVoyage?.recomputedReplay?.parentVoyage ||
+    "the loaded parent voyage";
+  if (!window.confirm(
+    `Cancel the recomputed replay of ${parentVoyage}? Partial output will be preserved in an incomplete, unverified ZIP.`,
+  )) {
+    return;
+  }
+  replayRecorderCommand("abort", "/voyage/replay/abort", {
+    reason: "user cancelled recomputed replay",
+  });
+});
 elements.saveCommentButton.addEventListener("click", () =>
   command("/voyage/comment", { comment: elements.commentInput.value }),
 );
@@ -191,8 +208,16 @@ async function replayRecorderCommand(action, path, body) {
 
 function renderReplayRecorder(status) {
   const playback = status.ajrmMarineLogger && status.ajrmMarineLogger.playback || {};
+  const coverage = playback.coverage || {};
   const currentVoyage = status.currentVoyage || null;
   const recomputedActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
+  const playbackError =
+    playback.lastError && typeof playback.lastError === "object"
+      ? playback.lastError
+      : null;
+  const resultCaptureActive = Boolean(
+    playback.resultCapture && playback.resultCapture.active === true,
+  );
   const sourceIds = playback.sourcePolicy &&
     (
       playback.sourcePolicy.resolvedSensorSourceIds ||
@@ -204,24 +229,39 @@ function renderReplayRecorder(status) {
     playback.sourcePolicy.id === "strict-recorded-sensor-source-allowlist-v1" &&
     sourceIds.length > 0 &&
     playback.rate === 1 &&
+    !playbackError &&
     !playback.active &&
     !playback.paused &&
     Number(playback.cursor || 0) === Number(playback.startCursor || 0);
   const playbackComplete =
-    playback.coverage &&
-    playback.coverage.complete === true &&
-    playback.coverage.preparedComplete === true &&
-    (playback.lastReason || playback.coverage.lastReason) === "end of capture" &&
+    coverage.complete === true &&
+    coverage.preparedComplete === true &&
+    (playback.lastReason || coverage.lastReason) === "end of capture" &&
     !playback.active &&
-    !playback.paused;
-  const busy = pendingReplayAction === "start" || pendingReplayAction === "stop";
+    !playback.paused &&
+    !playbackError &&
+    resultCaptureActive;
+  const busy = pendingReplayAction === "start" ||
+    pendingReplayAction === "stop" ||
+    pendingReplayAction === "abort";
   elements.startReplayCaptureButton.disabled = busy || Boolean(currentVoyage) || !ready;
   elements.stopReplayCaptureButton.disabled =
     busy || !recomputedActive || !playbackComplete;
+  elements.cancelReplayCaptureButton.disabled = busy || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
     pendingReplayAction === "start" ? "Starting..." : "Start replay result";
   elements.stopReplayCaptureButton.textContent =
     pendingReplayAction === "stop" ? "Building ZIP..." : "Stop and build ZIP";
+  elements.cancelReplayCaptureButton.textContent =
+    pendingReplayAction === "abort" ? "Cancelling..." : "Cancel replay result";
+  renderReplayProgress(
+    status,
+    playback,
+    recomputedActive,
+    resultCaptureActive,
+    playbackComplete,
+    playbackError,
+  );
   if (recomputedActive) {
     elements.replayCaptureInfo.textContent =
       `Capturing recomputed replay of ${currentVoyage.recomputedReplay.parentVoyage || "parent voyage"}.`;
@@ -251,6 +291,130 @@ function renderReplayRecorder(status) {
   }
 }
 
+function renderReplayProgress(
+  status,
+  playback,
+  recomputedActive,
+  resultCaptureActive,
+  playbackComplete,
+  playbackError,
+) {
+  const coverage = playback.coverage || {};
+  const lastReason = playback.lastReason || coverage.lastReason || null;
+  const replayedLines = finiteNumber(
+    coverage.replayedLines,
+    Math.max(0, Number(coverage.cursor ?? playback.cursor ?? 0) -
+      Number(coverage.startCursor ?? playback.startCursor ?? 0)),
+  );
+  const replayableLines = finiteNumber(
+    coverage.replayableLines,
+    Math.max(0, Number(coverage.totalLines ?? playback.totalLines ?? 0) -
+      Number(coverage.startCursor ?? playback.startCursor ?? 0)),
+  );
+  const percent = replayableLines > 0
+    ? Math.min(100, Math.max(0, replayedLines / replayableLines * 100))
+    : null;
+  const segmentsCompleted = finiteNumber(coverage.segmentsCompleted, null);
+  const segmentsTotal = finiteNumber(coverage.segmentsTotal, null);
+  const cursor = finiteNumber(coverage.cursor ?? playback.cursor, null);
+  const totalLines = finiteNumber(
+    coverage.totalLines ?? playback.totalLines,
+    null,
+  );
+
+  elements.replayPlaybackState.textContent = !playback.loaded
+    ? "Not loaded"
+    : playbackError
+      ? `FAILED${lastReason ? ` · ${lastReason}` : ""}`
+      : playback.active
+      ? `Playing at ${playback.rate || 1}x${lastReason ? ` · ${lastReason}` : ""}`
+      : playback.paused
+        ? `Paused${lastReason ? ` · ${lastReason}` : ""}`
+        : playbackComplete
+          ? "Complete · end of capture"
+          : resultCaptureActive && lastReason === "loaded"
+            ? "Armed · playback has not started"
+            : `Stalled / incomplete${lastReason ? ` · ${lastReason}` : ""}`;
+  elements.replayProgressValue.textContent = replayableLines > 0
+    ? `${replayedLines} of ${replayableLines} replay deltas${percent === null ? "" : ` · ${percent.toFixed(1)}%`}${cursor !== null && totalLines !== null ? ` · cursor ${cursor}/${totalLines}` : ""}`
+    : playback.loaded
+      ? cursor !== null && totalLines !== null
+        ? `No replayable deltas reported · cursor ${cursor}/${totalLines}`
+        : "No replayable deltas reported"
+      : "-";
+  elements.replaySegmentsValue.textContent =
+    segmentsCompleted !== null && segmentsTotal !== null
+      ? `${segmentsCompleted} of ${segmentsTotal} complete`
+      : playback.loaded
+        ? "Not reported"
+        : "-";
+  elements.replayFinaliseValue.textContent = replayFinaliseReason({
+    loggerStatus: status.ajrmMarineLogger || {},
+    playback,
+    coverage,
+    recomputedActive,
+    resultCaptureActive,
+    playbackComplete,
+    lastReason,
+    playbackError,
+  });
+}
+
+function replayFinaliseReason({
+  loggerStatus,
+  playback,
+  coverage,
+  recomputedActive,
+  resultCaptureActive,
+  playbackComplete,
+  lastReason,
+  playbackError,
+}) {
+  if (!recomputedActive) {
+    return "Start a replay result capture before playing the parent voyage.";
+  }
+  if (loggerStatus.ok === false) {
+    return `Disabled: Logger status is unavailable${loggerStatus.error ? ` — ${loggerStatus.error}` : ""}. Cancel to preserve partial evidence.`;
+  }
+  if (playbackError) {
+    const location = Number.isFinite(Number(playbackError.cursor))
+      ? ` at cursor ${Number(playbackError.cursor)}`
+      : "";
+    return `FAILED${location}: ${playbackError.message || "Logger reported a playback error"}. Cancel now to preserve the incomplete evidence ZIP.`;
+  }
+  if (!resultCaptureActive) {
+    return "Disabled: Logger's replay-result recorder is no longer active. Cancel to preserve partial evidence.";
+  }
+  if (playback.active) {
+    return "Disabled while Logger is playing. It will enable after every prepared segment reaches the end.";
+  }
+  if (playback.paused) {
+    return "Disabled while Logger reports playback paused. Cancel this incomplete run and retry.";
+  }
+  if (coverage.preparedComplete !== true) {
+    return "Disabled: Logger has not confirmed that every source segment was prepared.";
+  }
+  if (coverage.complete !== true) {
+    if (lastReason === "loaded") {
+      return "Disabled: press Play in Logger to begin the 1x sensor replay.";
+    }
+    return `Disabled: Logger has not completed replay coverage${lastReason ? ` (last reason: ${lastReason})` : ""}. Cancel this incomplete run if it cannot continue.`;
+  }
+  if (lastReason !== "end of capture") {
+    return `Disabled: full coverage is reported, but Logger's last reason is ${lastReason || "not available"}, not end of capture.`;
+  }
+  if (!playbackComplete) {
+    return "Disabled until Logger confirms the result recorder and final replay state.";
+  }
+  return "Ready: complete prepared coverage and end of capture confirmed.";
+}
+
+function finiteNumber(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function titleCase(value) {
   return String(value || "")
     .replace(/[-_]+/g, " ")
@@ -273,7 +437,7 @@ function renderVoyageBundles(voyages) {
           <strong>${escapeHtml(voyage.fileName)}</strong>
           <span>${escapeHtml(formatTime(voyage.modifiedAt))} · ${escapeHtml(formatBytes(voyage.bytes))}</span>
           ${voyage.comment ? `<p class="bundle-comment"><span>Comment:</span> ${escapeHtml(voyage.comment)}</p>` : ""}
-          ${voyage.recomputedReplay ? `<p class="bundle-comment"><span>Recomputed replay:</span> parent ${escapeHtml(voyage.recomputedReplay.parentVoyage || "unknown")}</p>` : ""}
+          ${voyage.recomputedReplay ? `<p class="bundle-comment"><span>Recomputed replay:</span> parent ${escapeHtml(voyage.recomputedReplay.parentVoyage || "unknown")}${voyage.recomputedReplay.incomplete === true ? " · INCOMPLETE / UNVERIFIED" : ""}</p>` : ""}
         </div>
       </button>
     `)

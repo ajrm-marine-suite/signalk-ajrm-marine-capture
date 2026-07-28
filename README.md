@@ -74,12 +74,15 @@ Logger replays only sensor-origin updates from a parent voyage:
 3. Confirm Logger's resolved exact physical source IDs. Its default `YDEN`
    prefix is resolved from the recording and supports both short and long YDEN
    source identities; optional exact IDs can be added for other hardware.
-4. In Capture press **Start replay result**. This starts a dedicated Logger
-   result recording with zero rolling-buffer backfill and forces portable
-   capture-file handling for the child voyage.
-5. In Logger use `1x` and start playback. The result workflow enforces `1x`
-   and forces every pre-indexed voyage segment even when ordinary auto-play-next
-   is off. Capture trusts Logger's cumulative `coverage.complete` contract and
+4. In Capture press **Start replay result** once. Capture starts a dedicated
+   Logger result recording with zero rolling-buffer backfill, forces portable
+   capture-file handling for the child voyage, and immediately starts Logger's
+   sensor replay at `1x`. There is no second Play step, so an armed recorder
+   cannot sit idle collecting unrelated calculator chatter.
+5. Watch Capture's Logger state, cursor/total progress, segment coverage, last
+   reason, and any explicit playback error. The workflow enforces `1x` and
+   forces every pre-indexed voyage segment even when ordinary auto-play-next is
+   off. Capture trusts Logger's cumulative `coverage.complete` contract and
    prevents finalisation until every replay segment has completed.
 6. After Logger reaches the end, press **Stop and build ZIP**. Logger allows a
    three-second quiet-period calculation flush, extended by each late output
@@ -101,6 +104,15 @@ Normal **Stop now** is disabled during this workflow. Only **Stop and build
 ZIP** can finalise the child, and it fails closed unless Logger confirms
 complete pre-indexed coverage, completes the calculation quiet period, and
 Capture copies every segment in Logger's result manifest into the ZIP.
+
+If Logger stops or reports an error before complete coverage, use **Cancel
+replay result**. After confirmation, Logger aborts and finalises its partial
+result segments without a calculation quiet-period wait. Capture preserves
+those segments in a ZIP explicitly marked `incomplete`, `verified: false`, and
+`aborted`; it never promotes that ZIP to a completed recomputation result. If
+Signal K restarts during a recomputed replay, startup recovery similarly copies
+only exact known or strictly wall-time-bounded partial Logger segments and
+marks the recovered ZIP interrupted, incomplete, and unverified.
 
 Portable download preparation is idempotent: if a voyage ZIP already contains
 every declared `captureFiles` entry, Capture serves that ZIP unchanged and does

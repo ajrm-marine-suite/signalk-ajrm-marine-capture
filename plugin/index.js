@@ -404,6 +404,16 @@ module.exports = function ajrmMarineCapture(app) {
         const loggerStatus = await getAjrmMarineLoggerStatus();
         const playback = loggerStatus?.playback || {};
         const coverage = playback.coverage || {};
+        if (playback.lastError) {
+          throw new Error(
+            `Logger playback failed: ${playback.lastError.message || "unknown playback error"}. Cancel the replay result to preserve partial evidence.`,
+          );
+        }
+        if (playback.resultCapture?.active !== true) {
+          throw new Error(
+            "Logger's replay-result recorder is no longer active. Cancel the replay result to preserve partial evidence.",
+          );
+        }
         const playbackIncomplete =
           playback.active ||
           playback.paused ||
@@ -416,6 +426,20 @@ module.exports = function ajrmMarineCapture(app) {
           );
         }
         const bundle = await stopVoyage("recomputed replay capture stopped");
+        res.json({ ok: true, bundle });
+      } catch (error) {
+        res.status(400).json({ ok: false, error: error.message });
+      }
+    });
+
+    router.post("/voyage/replay/abort", async (req, res) => {
+      try {
+        if (!currentVoyage?.recomputedReplay) {
+          throw new Error("No recomputed replay voyage is active");
+        }
+        const reason = normalizeComment(req.body?.reason) ||
+          "user cancelled recomputed replay";
+        const bundle = await abortRecomputedReplayVoyage(reason);
         res.json({ ok: true, bundle });
       } catch (error) {
         res.status(400).json({ ok: false, error: error.message });
@@ -779,6 +803,11 @@ module.exports = function ajrmMarineCapture(app) {
     if (playback.rate !== 1) {
       throw new Error("Select 1x playback in AJRM Marine Logger first");
     }
+    if (playback.lastError) {
+      throw new Error(
+        "Reload the parent voyage in AJRM Marine Logger to clear the previous playback error",
+      );
+    }
     const parentVoyage =
       playback.voyageFileName || playback.displayFileName || playback.fileName;
     const recomputedReplay = {
@@ -919,6 +948,50 @@ module.exports = function ajrmMarineCapture(app) {
       currentVoyage = null;
       throw new Error(message);
     }
+    if (currentVoyage.recomputedReplay) {
+      const playbackStart = await callAjrmMarineLogger(
+        "/playback/play",
+        { rate: 1 },
+      ).catch((error) => ({ ok: false, error: error.message }));
+      if (!playbackStart?.ok) {
+        const playbackError =
+          playbackStart?.error || "AJRM Marine Logger playback did not start";
+        let abortedBundle = null;
+        let abortError = null;
+        try {
+          abortedBundle = await abortRecomputedReplayVoyage(
+            `Logger playback failed to start: ${playbackError}`,
+          );
+        } catch (error) {
+          abortError = error;
+        }
+        if (abortedBundle) {
+          throw new Error(
+            `${playbackError}. The armed result capture was aborted and saved as incomplete, unverified ZIP ${abortedBundle.fileName}.`,
+          );
+        }
+        throw new Error(
+          `${playbackError}. Capture could not safely abort the armed result recorder: ${abortError?.message || "unknown abort failure"}. Use Cancel replay result or restart Signal K.`,
+        );
+      }
+      currentVoyage.ajrmMarineLogger = {
+        ...currentVoyage.ajrmMarineLogger,
+        playbackStart,
+      };
+      currentVoyage.recomputedReplay = {
+        ...currentVoyage.recomputedReplay,
+        playbackStartedAutomatically: true,
+        playbackStartedAt: new Date().toISOString(),
+      };
+      addVoyageEvent(
+        "replay-started",
+        "Logger sensor-only playback started automatically at 1x",
+      );
+      addEvent(
+        "replay-started",
+        `${currentVoyage.id}: Logger playback started automatically at 1x`,
+      );
+    }
     currentVoyage.captureReferences = initialCaptureReferences(currentVoyage);
     if (currentVoyage.captureReferences.length) {
       addVoyageEvent(
@@ -993,6 +1066,10 @@ module.exports = function ajrmMarineCapture(app) {
         }
         voyage.recomputedReplay = {
           ...voyage.recomputedReplay,
+          status: "complete",
+          complete: true,
+          incomplete: false,
+          verified: true,
           rate: replayResult?.rate ?? voyage.recomputedReplay.rate,
           sourcePolicy:
             replayResult?.sourcePolicy || voyage.recomputedReplay.sourcePolicy,
@@ -1001,6 +1078,9 @@ module.exports = function ajrmMarineCapture(app) {
           completedAt: new Date().toISOString(),
           result: replayResult,
         };
+        voyage.incomplete = false;
+        voyage.recomputationVerified = true;
+        voyage.aborted = false;
       }
       const stoppedAt = new Date().toISOString();
       voyage.stoppedAt = stoppedAt;
@@ -1037,6 +1117,116 @@ module.exports = function ajrmMarineCapture(app) {
         state: "alert",
       });
       addEvent("voyage-stopped", `${voyage.id}: ${reason}`);
+      publishState();
+      return bundle;
+    } finally {
+      stoppingVoyage = false;
+    }
+  }
+
+  async function abortRecomputedReplayVoyage(reason) {
+    if (!currentVoyage?.recomputedReplay) {
+      throw new Error("No recomputed replay voyage is active");
+    }
+    if (stoppingVoyage) {
+      throw new Error("Voyage finalisation is already in progress");
+    }
+    stoppingVoyage = true;
+    const voyage = currentVoyage;
+    try {
+      await observationWriteQueue;
+      addVoyageEvent("replay-abort", reason);
+      addEvent("voyage-aborting", `${voyage.id}: ${reason}`);
+      if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
+      const captureStop = await callAjrmMarineLogger(
+        "/playback/result-capture/abort",
+        { reason },
+      ).catch((error) => ({
+        ok: false,
+        error: error.message,
+      }));
+      voyage.captureStop = captureStop;
+      if (!captureStop?.ok) {
+        throw new Error(
+          captureStop?.error ||
+          "AJRM Marine Logger did not safely abort the recomputed replay capture",
+        );
+      }
+
+      const stoppedAt = new Date().toISOString();
+      const replayResult = markReplayResultIncomplete(
+        captureStop?.recording?.replayResult,
+        {
+          aborted: true,
+          abortReason: reason,
+          interruptedByRestart: false,
+        },
+      );
+      voyage.stoppedAt = stoppedAt;
+      voyage.stopReason = `Recomputed replay cancelled: ${reason}`;
+      voyage.incomplete = true;
+      voyage.recomputationVerified = false;
+      voyage.aborted = true;
+      voyage.recomputedReplay = {
+        ...voyage.recomputedReplay,
+        status: "incomplete",
+        complete: false,
+        incomplete: true,
+        verified: false,
+        aborted: true,
+        abortReason: reason,
+        abortedAt: stoppedAt,
+        result: replayResult,
+      };
+      await closeDrTrack(voyage, stoppedAt);
+      await copyDrPlotFixes(voyage);
+      await copyConsoleBiteReports(voyage);
+      await copyIncompleteRecomputedCaptureFiles(voyage, captureStop);
+      if (!voyage.captureFiles.length) {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          "The cancelled replay produced no non-empty partial Logger segments",
+        );
+      }
+      await writeJson(
+        path.join(voyage.directory, "system", "replay-abort-status.json"),
+        {
+          ok: true,
+          abortedAt: stoppedAt,
+          reason,
+          incomplete: true,
+          verified: false,
+          captureFiles: voyage.captureFiles,
+          note:
+            "This ZIP preserves partial evidence only and is not a completed recomputation result.",
+        },
+      );
+      const index = await writeVoyageIndex(voyage);
+      const bundle = await bundleVoyage(voyage, index);
+      if (bundle?.format !== "zip") {
+        throw new Error(
+          bundle?.error ||
+          "The incomplete recomputed voyage could not be packaged as a ZIP",
+        );
+      }
+      if (options.deleteWorkingDirectoryAfterZip) {
+        await fs.promises.rm(voyage.directory, {
+          recursive: true,
+          force: true,
+        });
+        bundle.workingDirectoryDeleted = true;
+      }
+      currentVoyage = null;
+      lastBundle = bundle;
+      publishNotification({
+        voyageId: voyage.id,
+        leaf: "abort",
+        message:
+          "Recomputed replay cancelled. Partial evidence was saved in an incomplete, unverified voyage ZIP.",
+        state: "alert",
+      });
+      addEvent("voyage-aborted", `${voyage.id}: incomplete ZIP prepared`);
       publishState();
       return bundle;
     } finally {
@@ -1108,8 +1298,34 @@ module.exports = function ajrmMarineCapture(app) {
       recoveredAt: now,
       interruptedByRestart: true,
     };
+    if (voyage.recomputedReplay) {
+      voyage.incomplete = true;
+      voyage.recomputationVerified = false;
+      voyage.recomputedReplay = {
+        ...voyage.recomputedReplay,
+        status: "incomplete",
+        complete: false,
+        incomplete: true,
+        verified: false,
+        interruptedByRestart: true,
+        recoveredAt: now,
+        result: markReplayResultIncomplete(
+          voyage.recomputedReplay.result,
+          {
+            aborted: false,
+            abortReason:
+              "Signal K restarted before recomputed replay finalisation",
+            interruptedByRestart: true,
+          },
+        ),
+      };
+    }
     appendVoyageEvent(voyage, "recovered", "Voyage closed at startup after Signal K restart");
-    await copyCaptureFiles(voyage, voyage.captureStop);
+    if (voyage.recomputedReplay) {
+      await copyIncompleteRecomputedCaptureFiles(voyage, voyage.captureStop);
+    } else {
+      await copyCaptureFiles(voyage, voyage.captureStop);
+    }
     if (!voyage.captureFiles.length && !voyage.captureReferences.length) {
       appendVoyageEvent(
         voyage,
@@ -1123,6 +1339,10 @@ module.exports = function ajrmMarineCapture(app) {
       ok: true,
       recoveredAt: now,
       reason: voyage.stopReason,
+      incomplete: voyage.incomplete === true,
+      recomputationVerified:
+        voyage.recomputedReplay ? false : null,
+      captureFiles: voyage.captureFiles,
       note: "This voyage was not resumed because Signal K was stopped or restarted before normal voyage shutdown.",
     });
     const index = await writeVoyageIndex(voyage);
@@ -1517,6 +1737,340 @@ module.exports = function ajrmMarineCapture(app) {
     if (!copied.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
   }
 
+  function markReplayResultIncomplete(result, {
+    aborted,
+    abortReason,
+    interruptedByRestart,
+  }) {
+    const source = result && typeof result === "object" ? result : {};
+    const sourceCoverage =
+      source.coverage && typeof source.coverage === "object"
+        ? source.coverage
+        : {};
+    const sourceSegments =
+      source.resultSegments && typeof source.resultSegments === "object"
+        ? source.resultSegments
+        : {};
+    return {
+      schemaVersion: source.schemaVersion || 1,
+      kind: source.kind || "recomputed-replay",
+      ...source,
+      aborted: aborted === true,
+      incomplete: true,
+      abortReason:
+        aborted === true
+          ? String(abortReason || source.abortReason || "recomputed replay aborted")
+          : source.abortReason || null,
+      interruptedByRestart: interruptedByRestart === true,
+      interruptionReason:
+        interruptedByRestart === true
+          ? String(
+              abortReason ||
+              source.interruptionReason ||
+              "Signal K restarted before recomputed replay finalisation",
+            )
+          : source.interruptionReason || null,
+      coverage: {
+        ...sourceCoverage,
+        complete: false,
+        resultSegmentsComplete: false,
+      },
+      resultSegments: {
+        schemaVersion: sourceSegments.schemaVersion || 1,
+        ...sourceSegments,
+        complete: false,
+      },
+    };
+  }
+
+  async function copyIncompleteRecomputedCaptureFiles(voyage, captureStop) {
+    const capturesDir = ajrmMarineLoggerCapturesDir();
+    const captureDirectory = path.join(voyage.directory, "capture");
+    await fs.promises.mkdir(captureDirectory, { recursive: true });
+    const existingNames = await listCaptureFileNames(captureDirectory);
+    const copiedByLogicalName = new Map(
+      existingNames.map((fileName) => [logicalCaptureFileName(fileName), fileName]),
+    );
+    const referencesByLogicalName = new Map();
+    for (const reference of Array.isArray(voyage.captureReferences)
+      ? voyage.captureReferences
+      : []) {
+      if (!isSafeCaptureFileName(reference?.fileName)) continue;
+      referencesByLogicalName.set(
+        logicalCaptureFileName(reference.fileName),
+        reference,
+      );
+    }
+
+    const replayResult =
+      captureStop?.recording?.replayResult ||
+      voyage.recomputedReplay?.result ||
+      null;
+    const declaredSegments = incompleteReplayResultSegments(
+      replayResult?.resultSegments,
+      voyage,
+    );
+    for (const segment of declaredSegments) {
+      const logicalName = logicalCaptureFileName(segment.fileName);
+      referencesByLogicalName.set(
+        logicalName,
+        captureReference(capturesDir, segment),
+      );
+      if (copiedByLogicalName.has(logicalName)) continue;
+      const copiedName = await copyStableIncompleteReplayCandidate(
+        capturesDir,
+        segment.fileName,
+        voyage.directory,
+        Number(segment.bytes || 0),
+      );
+      if (copiedName) {
+        copiedByLogicalName.set(logicalName, copiedName);
+        appendVoyageEvent(voyage, "capture-copied", copiedName);
+      } else {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          `Declared partial replay segment was unavailable or changed: ${segment.fileName}`,
+        );
+      }
+    }
+
+    const recoveredSegments = await incompleteReplayCaptureCandidates(
+      capturesDir,
+      voyage,
+      captureStop,
+      replayResult,
+    );
+    for (const segment of recoveredSegments) {
+      const logicalName = logicalCaptureFileName(segment.fileName);
+      if (!referencesByLogicalName.has(logicalName)) {
+        referencesByLogicalName.set(
+          logicalName,
+          captureReference(capturesDir, segment),
+        );
+      }
+      if (copiedByLogicalName.has(logicalName)) continue;
+      const copiedName = await copyStableIncompleteReplayCandidate(
+        capturesDir,
+        segment.fileName,
+        voyage.directory,
+        Number(segment.bytes || 0),
+      );
+      if (!copiedName) {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          `Partial replay segment was unavailable or changed: ${segment.fileName}`,
+        );
+        continue;
+      }
+      copiedByLogicalName.set(logicalName, copiedName);
+      appendVoyageEvent(voyage, "capture-copied", copiedName);
+    }
+
+    voyage.captureFiles = Array.from(copiedByLogicalName.values())
+      .sort((left, right) => left.localeCompare(right));
+    voyage.captureReferences = Array.from(referencesByLogicalName.values())
+      .sort((left, right) =>
+        String(left?.fileName || "").localeCompare(
+          String(right?.fileName || ""),
+        ),
+      );
+    voyage.recomputedReplay = {
+      ...voyage.recomputedReplay,
+      partialCaptureRecovery: {
+        schemaVersion: 1,
+        verified: false,
+        declaredPartialManifestAvailable:
+          Boolean(replayResult?.resultSegments) &&
+          declaredSegments.length > 0,
+        selectionMethod:
+          declaredSegments.length > 0
+            ? "finalized-declared-segments-plus-bounded-recovery"
+            : "known-name-or-strict-voyage-wall-time-window",
+        captureFiles: voyage.captureFiles,
+      },
+    };
+  }
+
+  function incompleteReplayResultSegments(manifest, voyage) {
+    if (!manifest || typeof manifest !== "object") return [];
+    const segments = [];
+    const logicalNames = new Set();
+    for (const segment of Array.isArray(manifest.segments)
+      ? manifest.segments
+      : []) {
+      const fileName = String(segment?.fileName || "");
+      if (!isSafeCaptureFileName(fileName)) {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          "Logger declared an unsafe partial replay segment name; it was not copied",
+        );
+        continue;
+      }
+      if (
+        segment.finalized !== true ||
+        segment.available !== true ||
+        Number(segment.bytes || 0) <= 0 ||
+        Number(segment.lines || 0) <= 0
+      ) {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          `Logger did not finalise partial replay segment ${fileName}; it was not trusted as a declared segment`,
+        );
+        continue;
+      }
+      const logicalName = logicalCaptureFileName(fileName);
+      if (logicalNames.has(logicalName)) {
+        appendVoyageEvent(
+          voyage,
+          "capture-copy-warning",
+          `Logger declared duplicate partial replay segment ${fileName}; the duplicate was ignored`,
+        );
+        continue;
+      }
+      logicalNames.add(logicalName);
+      segments.push(segment);
+    }
+    return segments;
+  }
+
+  async function incompleteReplayCaptureCandidates(
+    capturesDir,
+    voyage,
+    captureStop,
+    replayResult,
+  ) {
+    const knownLogicalNames = new Set();
+    const rememberKnownName = (value) => {
+      const fileName = String(value || "");
+      if (isSafeCaptureFileName(fileName)) {
+        knownLogicalNames.add(logicalCaptureFileName(fileName));
+      }
+    };
+    rememberKnownName(voyage.ajrmMarineLogger?.recording?.fileName);
+    rememberKnownName(voyage.ajrmMarineLogger?.fileName);
+    rememberKnownName(captureStop?.recording?.fileName);
+    for (const reference of Array.isArray(voyage.captureReferences)
+      ? voyage.captureReferences
+      : []) {
+      rememberKnownName(reference?.fileName);
+    }
+    for (const segment of Array.isArray(replayResult?.resultSegments?.segments)
+      ? replayResult.resultSegments.segments
+      : []) {
+      rememberKnownName(segment?.fileName);
+    }
+
+    const startedAt =
+      voyage.ajrmMarineLogger?.recording?.startedAt ||
+      voyage.ajrmMarineLogger?.recording?.from ||
+      voyage.ajrmMarineLogger?.startedAt ||
+      voyage.startedAt;
+    const fromMs = Date.parse(startedAt || "");
+    const toMs = Date.parse(voyage.stoppedAt || "");
+    const entries = await fs.promises.readdir(capturesDir, {
+      withFileTypes: true,
+    }).catch(() => []);
+    const byLogicalName = new Map();
+    for (const entry of entries) {
+      if (!entry.isFile() || !isSafeCaptureFileName(entry.name)) continue;
+      const logicalName = logicalCaptureFileName(entry.name);
+      const fileStartedAtMs = Date.parse(
+        recordingStartedAtFromFileName(entry.name),
+      );
+      const isKnown = knownLogicalNames.has(logicalName);
+      const isStrictlyInsideVoyage =
+        Number.isFinite(fromMs) &&
+        Number.isFinite(toMs) &&
+        Number.isFinite(fileStartedAtMs) &&
+        fileStartedAtMs >= fromMs - 5000 &&
+        fileStartedAtMs <= toMs + 5000;
+      if (!isKnown && !isStrictlyInsideVoyage) continue;
+      const fullPath = path.join(capturesDir, entry.name);
+      const info = await fs.promises.stat(fullPath).catch(() => null);
+      if (!info?.isFile() || info.size <= 0) continue;
+      const segment = {
+        fileName: entry.name,
+        from: recordingStartedAtFromFileName(entry.name) || null,
+        to: new Date(info.mtimeMs).toISOString(),
+        bytes: info.size,
+        compressed: entry.name.endsWith(".gz"),
+      };
+      const existing = byLogicalName.get(logicalName);
+      if (!existing || shouldPreferCaptureSegment(segment, existing)) {
+        byLogicalName.set(logicalName, segment);
+      }
+    }
+    return Array.from(byLogicalName.values())
+      .sort((left, right) => left.fileName.localeCompare(right.fileName));
+  }
+
+  async function copyStableIncompleteReplayCandidate(
+    capturesDir,
+    fileName,
+    voyageDirectory,
+    expectedBytes,
+  ) {
+    if (!isSafeCaptureFileName(fileName)) return null;
+    const logicalName = logicalCaptureFileName(fileName);
+    const candidateNames = fileName.endsWith(".gz")
+      ? [fileName, logicalName]
+      : [`${fileName}.gz`, fileName];
+    for (const candidate of candidateNames) {
+      if (!isSafeCaptureFileName(candidate)) continue;
+      const source = path.join(capturesDir, candidate);
+      const before = await fs.promises.stat(source).catch(() => null);
+      if (!before?.isFile() || before.size <= 0) continue;
+      if (
+        Number(expectedBytes || 0) > 0 &&
+        candidate === fileName &&
+        before.size !== Number(expectedBytes)
+      ) {
+        continue;
+      }
+      const target = path.join(voyageDirectory, "capture", candidate);
+      const existing = await fs.promises.stat(target).catch(() => null);
+      if (existing?.isFile() && existing.size === before.size) return candidate;
+      const temporary = `${target}.partial-${randomUUID()}`;
+      try {
+        await fs.promises.copyFile(source, temporary);
+        const [after, copied] = await Promise.all([
+          fs.promises.stat(source).catch(() => null),
+          fs.promises.stat(temporary).catch(() => null),
+        ]);
+        if (
+          !after?.isFile() ||
+          !copied?.isFile() ||
+          after.size !== before.size ||
+          after.mtimeMs !== before.mtimeMs ||
+          copied.size !== before.size
+        ) {
+          await fs.promises.unlink(temporary).catch(() => {});
+          continue;
+        }
+        await fs.promises.rename(temporary, target);
+        return candidate;
+      } catch (_error) {
+        await fs.promises.unlink(temporary).catch(() => {});
+      }
+    }
+    return null;
+  }
+
+  function isSafeCaptureFileName(value) {
+    const fileName = String(value || "");
+    return (
+      fileName.length > 0 &&
+      path.basename(fileName) === fileName &&
+      /^capture-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.jsonl(?:\.gz)?$/i.test(
+        fileName,
+      )
+    );
+  }
+
   function validateRecomputedResultSegmentManifest(manifest) {
     if (!manifest || typeof manifest !== "object") {
       throw new Error("AJRM Marine Logger did not declare recomputed result segments");
@@ -1772,6 +2326,12 @@ module.exports = function ajrmMarineCapture(app) {
       captureMode: voyage.captureMode || options.captureMode,
       captureFileMode: voyage.captureFileMode || options.captureFileMode,
       recomputedReplay: voyage.recomputedReplay || null,
+      incomplete: voyage.incomplete === true,
+      recomputationVerified: voyage.recomputedReplay
+        ? voyage.recomputationVerified === true &&
+          voyage.recomputedReplay?.verified !== false
+        : null,
+      aborted: voyage.aborted === true,
       interruptedByRestart: voyage.interruptedByRestart === true,
       recoveredAt: voyage.recoveredAt || null,
       ajrmMarineLogger: {
@@ -1795,7 +2355,9 @@ module.exports = function ajrmMarineCapture(app) {
         "Use tracks/dr-plot-fixes.json for navigator-style timed, manual, observed, GPS-lost, and GPS-return DR plot fixes when present.",
         "Capture files may contain AJRM Marine Logger backfill followed by live records. Use captureIndex for timestamp order, overlap and duplicate guidance before scanning large logs.",
         "If captureFileMode is reference, raw AJRM Marine Logger files were not copied into the bundle; use captureReferences on this server to locate the source recordings.",
-        "If recomputedReplay is present, this portable bundle was captured from fresh-wall-time replay of the listed sensor source identities; use parentVoyage, playbackMode, rate, sourcePolicy and sourceFilterStats to audit it.",
+        voyage.recomputedReplay?.incomplete === true
+          ? "WARNING: this recomputed replay was interrupted or cancelled. It is incomplete and unverified, preserves partial evidence only, and must not be treated as proof that recalculation completed."
+          : "If recomputedReplay is present, this portable bundle was captured from fresh-wall-time replay of the listed sensor source identities; use parentVoyage, playbackMode, rate, sourcePolicy and sourceFilterStats to audit it.",
       ],
     };
     const indexPath = path.join(voyage.directory, "index.json");
@@ -1804,7 +2366,13 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function buildCaptureIndex(voyage) {
-    return buildCaptureIndexForDirectory(voyage.directory, voyage.captureFiles || []);
+    return buildCaptureIndexForDirectory(
+      voyage.directory,
+      voyage.captureFiles || [],
+      {
+        tolerateReadErrors: voyage.incomplete === true,
+      },
+    );
   }
 
   async function summarizeCaptureFile(filePath, fileName) {
@@ -2021,6 +2589,24 @@ module.exports = function ajrmMarineCapture(app) {
           "recomputed replay voyage stopped",
         );
         return { ok: true, recording };
+      }
+      if (
+        route === "/playback/result-capture/abort" &&
+        typeof ajrmMarineLoggerApi.abortReplayResultCapture === "function"
+      ) {
+        const recording = await ajrmMarineLoggerApi.abortReplayResultCapture(
+          body?.reason || "recomputed replay capture aborted",
+        );
+        return { ok: true, recording };
+      }
+      if (
+        route === "/playback/play" &&
+        typeof ajrmMarineLoggerApi.startPlayback === "function"
+      ) {
+        const playback = await ajrmMarineLoggerApi.startPlayback(
+          body?.rate ?? 1,
+        );
+        return { ok: true, playback };
       }
       if (
         route === "/playback/result-capture/stop" &&
@@ -2991,12 +3577,38 @@ function booleanOrNull(value) {
   return typeof value === "boolean" ? value : null;
 }
 
-async function buildCaptureIndexForDirectory(bundleDirectory, captureFiles) {
+async function buildCaptureIndexForDirectory(
+  bundleDirectory,
+  captureFiles,
+  indexOptions = {},
+) {
   const files = [];
   const allRecords = [];
   for (const fileName of captureFiles || []) {
     const filePath = path.join(bundleDirectory, "capture", fileName);
-    const summary = await summarizeCaptureFileForIndex(filePath, fileName);
+    let summary;
+    try {
+      summary = await summarizeCaptureFileForIndex(filePath, fileName);
+    } catch (error) {
+      if (indexOptions.tolerateReadErrors !== true) throw error;
+      summary = {
+        fileName,
+        error: `Incomplete replay evidence could not be decoded: ${String(
+          error?.message || error,
+        ).slice(0, 500)}`,
+        records: 0,
+        duplicateRecordsInSample: 0,
+        outOfOrderRecords: 0,
+        firstTimestamp: null,
+        lastTimestamp: null,
+        contexts: {},
+        sources: {},
+        paths: {},
+        trafficProjectionSessions: {},
+        trafficProjectionSequence: {},
+        sampleTimeline: [],
+      };
+    }
     files.push(summary);
     allRecords.push(...summary.sampleTimeline);
     delete summary.sampleTimeline;

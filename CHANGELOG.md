@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.3
+
+- Start Logger's `1x` sensor playback automatically after arming a recomputed
+  result capture, aborting and preserving an explicitly incomplete ZIP if the
+  playback start request fails.
+- Show replay state, exact cursor/total progress, segment coverage, last reason,
+  and Logger's explicit playback error so a stalled run is distinguishable from
+  a healthy real-time replay.
+- Add a confirmed **Cancel replay result** action that uses Logger's dedicated
+  abort contract and preserves finalised partial output in an incomplete,
+  unverified ZIP rather than claiming successful recomputation.
+- Recover recomputed replay working directories after Signal K restart without
+  requiring Logger's lost in-memory result manifest. Copy only known or
+  strictly wall-time-bounded partial capture segments and mark the bundle
+  interrupted, incomplete, and unverified.
+
 ## 0.6.2
 
 - Add a bounded timestamped voyage observation log for AJRM Marine Display and
