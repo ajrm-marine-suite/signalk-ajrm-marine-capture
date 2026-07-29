@@ -8,6 +8,7 @@ const readline = require("node:readline");
 const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
 const AdmZip = require("adm-zip");
+const yauzl = require("yauzl");
 const packageInfo = require("../package.json");
 
 const MPS_TO_KNOTS = 1.9438444924406046;
@@ -35,6 +36,9 @@ const MAX_OBSERVATION_TEXT_CHARACTERS = 2000;
 const MAX_OBSERVATIONS_PER_VOYAGE = 1000;
 const MAX_OBSERVATIONS_RETURNED = 200;
 const MAX_PARENT_OBSERVATIONS_BYTES = 5 * 1024 * 1024;
+const MAX_VOYAGE_INDEX_BYTES = 2 * 1024 * 1024;
+const voyageBundleMetadataCache = new Map();
+const voyageBundleMetadataJobs = new Map();
 const DR_PLOTTER_FIXES_FILE = path.join(
   os.homedir(),
   ".signalk",
@@ -3846,7 +3850,7 @@ async function listVoyageBundlesInDirectory(directory) {
     const filePath = path.join(directory, entry.name);
     const info = await fs.promises.stat(filePath).catch(() => null);
     if (!info?.isFile()) continue;
-    const index = await readVoyageZipIndex(filePath);
+    const index = await cachedVoyageZipIndex(filePath, info);
     result.push({
       fileName: entry.name,
       bytes: info.size,
@@ -3862,15 +3866,79 @@ async function listVoyageBundlesInDirectory(directory) {
   return result.sort((left, right) => String(right.modifiedAt).localeCompare(String(left.modifiedAt)));
 }
 
-async function readVoyageZipIndex(filePath) {
-  try {
-    const zip = new AdmZip(filePath);
-    const entry = zip.getEntry("index.json");
-    if (!entry || entry.isDirectory) return null;
-    return JSON.parse(entry.getData().toString("utf8"));
-  } catch (_error) {
-    return null;
+async function cachedVoyageZipIndex(filePath, info) {
+  const cacheKey = `${filePath}:${info.size}:${info.mtimeMs}`;
+  if (voyageBundleMetadataCache.has(cacheKey)) {
+    return voyageBundleMetadataCache.get(cacheKey);
   }
+  if (voyageBundleMetadataJobs.has(cacheKey)) {
+    return voyageBundleMetadataJobs.get(cacheKey);
+  }
+  for (const key of voyageBundleMetadataCache.keys()) {
+    if (key.startsWith(`${filePath}:`)) voyageBundleMetadataCache.delete(key);
+  }
+  const job = readVoyageZipIndex(filePath)
+    .then((index) => {
+      voyageBundleMetadataCache.set(cacheKey, index);
+      return index;
+    })
+    .finally(() => {
+      voyageBundleMetadataJobs.delete(cacheKey);
+    });
+  voyageBundleMetadataJobs.set(cacheKey, job);
+  return job;
+}
+
+async function readVoyageZipIndex(filePath) {
+  return new Promise((resolve) => {
+    yauzl.open(filePath, { lazyEntries: true, autoClose: true }, (openError, zip) => {
+      if (openError || !zip) {
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        zip.close();
+        resolve(value);
+      };
+      zip.once("error", () => finish(null));
+      zip.once("end", () => finish(null));
+      zip.on("entry", (entry) => {
+        if (
+          entry.fileName !== "index.json" ||
+          /\/$/.test(entry.fileName) ||
+          entry.uncompressedSize > MAX_VOYAGE_INDEX_BYTES
+        ) {
+          zip.readEntry();
+          return;
+        }
+        zip.openReadStream(entry, (streamError, stream) => {
+          if (streamError || !stream) {
+            finish(null);
+            return;
+          }
+          const chunks = [];
+          let bytes = 0;
+          stream.on("data", (chunk) => {
+            bytes += chunk.length;
+            if (bytes <= MAX_VOYAGE_INDEX_BYTES) chunks.push(chunk);
+            else stream.destroy(new Error("Voyage index is too large"));
+          });
+          stream.once("error", () => finish(null));
+          stream.once("end", () => {
+            try {
+              finish(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            } catch (_error) {
+              finish(null);
+            }
+          });
+        });
+      });
+      zip.readEntry();
+    });
+  });
 }
 
 async function buildPortableDownloadBundle(sourceZipPath, fileName) {

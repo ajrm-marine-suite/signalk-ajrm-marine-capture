@@ -5,6 +5,9 @@
 AJRM Marine Capture is a Signal K voyage recorder and diagnostic bundle orchestrator
 for AJRM Marine suite testing and real sailing review.
 
+Version `0.6.4` keeps the Capture status page and its Voyage bundles panel
+responsive with large archives by reading and caching only ZIP index metadata.
+
 It watches own-vessel movement, starts AJRM Marine Logger when the vessel gets underway,
 takes AJRM Marine Snapshot diagnostics according to the selected voyage mode, stops recording
 when the vessel has stopped, and writes an indexed voyage bundle for later

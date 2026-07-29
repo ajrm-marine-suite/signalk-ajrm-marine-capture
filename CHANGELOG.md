@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.4
+
+- Restore responsive status and Voyage bundles rendering with large voyage
+  archives by reading only ZIP directory/index metadata.
+- Cache unchanged bundle metadata by file size and modification time instead of
+  reopening every complete ZIP on each browser status poll.
+
 ## 0.6.3
 
 - Start Logger's `1x` sensor playback automatically after arming a recomputed
