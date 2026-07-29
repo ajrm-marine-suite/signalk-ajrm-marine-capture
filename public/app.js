@@ -26,7 +26,7 @@ const elements = {
   stopButton: document.getElementById("stopButton"),
   startReplayCaptureButton: document.getElementById("startReplayCaptureButton"),
   stopReplayCaptureButton: document.getElementById("stopReplayCaptureButton"),
-  cancelReplayCaptureButton: document.getElementById("cancelReplayCaptureButton"),
+  interruptReplayCaptureButton: document.getElementById("interruptReplayCaptureButton"),
   replayCaptureInfo: document.getElementById("replayCaptureInfo"),
   replayPlaybackState: document.getElementById("replayPlaybackState"),
   replayProgressValue: document.getElementById("replayProgressValue"),
@@ -59,16 +59,16 @@ elements.startReplayCaptureButton.addEventListener("click", () =>
 elements.stopReplayCaptureButton.addEventListener("click", () =>
   replayRecorderCommand("stop", "/voyage/replay/stop", {}),
 );
-elements.cancelReplayCaptureButton.addEventListener("click", () => {
+elements.interruptReplayCaptureButton.addEventListener("click", () => {
   const parentVoyage = latestStatus?.currentVoyage?.recomputedReplay?.parentVoyage ||
     "the loaded parent voyage";
   if (!window.confirm(
-    `Cancel the recomputed replay of ${parentVoyage}? Partial output will be preserved in an incomplete, unverified ZIP.`,
+    `Interrupt the recomputed replay of ${parentVoyage}? Partial output will be preserved in an incomplete, unverified ZIP.`,
   )) {
     return;
   }
   replayRecorderCommand("abort", "/voyage/replay/abort", {
-    reason: "user cancelled recomputed replay",
+    reason: "user interrupted recomputed replay",
   });
 });
 elements.saveCommentButton.addEventListener("click", () =>
@@ -247,13 +247,13 @@ function renderReplayRecorder(status) {
   elements.startReplayCaptureButton.disabled = busy || Boolean(currentVoyage) || !ready;
   elements.stopReplayCaptureButton.disabled =
     busy || !recomputedActive || !playbackComplete;
-  elements.cancelReplayCaptureButton.disabled = busy || !recomputedActive;
+  elements.interruptReplayCaptureButton.disabled = busy || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
     pendingReplayAction === "start" ? "Starting..." : "Start replay result";
   elements.stopReplayCaptureButton.textContent =
     pendingReplayAction === "stop" ? "Building ZIP..." : "Stop and build ZIP";
-  elements.cancelReplayCaptureButton.textContent =
-    pendingReplayAction === "abort" ? "Cancelling..." : "Cancel replay result";
+  elements.interruptReplayCaptureButton.textContent =
+    pendingReplayAction === "abort" ? "Interrupting..." : "Interrupt replay";
   renderReplayProgress(
     status,
     playback,
@@ -374,22 +374,22 @@ function replayFinaliseReason({
     return "Start a replay result capture before playing the parent voyage.";
   }
   if (loggerStatus.ok === false) {
-    return `Disabled: Logger status is unavailable${loggerStatus.error ? ` — ${loggerStatus.error}` : ""}. Cancel to preserve partial evidence.`;
+    return `Disabled: Logger status is unavailable${loggerStatus.error ? ` — ${loggerStatus.error}` : ""}. Interrupt the replay to preserve partial evidence.`;
   }
   if (playbackError) {
     const location = Number.isFinite(Number(playbackError.cursor))
       ? ` at cursor ${Number(playbackError.cursor)}`
       : "";
-    return `FAILED${location}: ${playbackError.message || "Logger reported a playback error"}. Cancel now to preserve the incomplete evidence ZIP.`;
+    return `FAILED${location}: ${playbackError.message || "Logger reported a playback error"}. Interrupt now to preserve the incomplete evidence ZIP.`;
   }
   if (!resultCaptureActive) {
-    return "Disabled: Logger's replay-result recorder is no longer active. Cancel to preserve partial evidence.";
+    return "Disabled: Logger's replay-result recorder is no longer active. Interrupt the replay to preserve partial evidence.";
   }
   if (playback.active) {
     return "Disabled while Logger is playing. It will enable after every prepared segment reaches the end.";
   }
   if (playback.paused) {
-    return "Disabled while Logger reports playback paused. Cancel this incomplete run and retry.";
+    return "Disabled while Logger reports playback paused. Interrupt this incomplete run and retry.";
   }
   if (coverage.preparedComplete !== true) {
     return "Disabled: Logger has not confirmed that every source segment was prepared.";
@@ -398,7 +398,7 @@ function replayFinaliseReason({
     if (lastReason === "loaded") {
       return "Disabled: press Play in Logger to begin the 1x sensor replay.";
     }
-    return `Disabled: Logger has not completed replay coverage${lastReason ? ` (last reason: ${lastReason})` : ""}. Cancel this incomplete run if it cannot continue.`;
+    return `Disabled: Logger has not completed replay coverage${lastReason ? ` (last reason: ${lastReason})` : ""}. Interrupt this incomplete run if it cannot continue.`;
   }
   if (lastReason !== "end of capture") {
     return `Disabled: full coverage is reported, but Logger's last reason is ${lastReason || "not available"}, not end of capture.`;

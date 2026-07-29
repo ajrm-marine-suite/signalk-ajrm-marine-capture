@@ -459,7 +459,7 @@ test("recomputed replay start and stop builds a portable child voyage with audit
   }
 });
 
-test("cancelled recomputed replay preserves finalised partial output as incomplete and unverified", async () => {
+test("interrupted recomputed replay preserves finalised partial output as incomplete and unverified", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "ajrm-capture-replay-abort-"),
   );
@@ -550,7 +550,7 @@ test("cancelled recomputed replay preserves finalised partial output as incomple
     sourcePolicy,
     aborted: true,
     incomplete: true,
-    abortReason: "user cancelled recomputed replay",
+    abortReason: "user interrupted recomputed replay",
     coverage: {
       complete: false,
       preparedComplete: true,
@@ -592,7 +592,7 @@ test("cancelled recomputed replay preserves finalised partial output as incomple
     },
     async abortReplayResultCapture(reason) {
       abortCalls += 1;
-      assert.equal(reason, "user cancelled recomputed replay");
+      assert.equal(reason, "user interrupted recomputed replay");
       loggerStatus.playback.active = false;
       loggerStatus.playback.lastReason = "aborted";
       return {
@@ -620,7 +620,7 @@ test("cancelled recomputed replay preserves finalised partial output as incomple
     assert.equal(started.statusCode, 200);
     assert.equal(playbackStartCalls, 1);
     const aborted = await invoke(routes, "POST", "/voyage/replay/abort", {
-      reason: "user cancelled recomputed replay",
+      reason: "user interrupted recomputed replay",
     });
     assert.equal(aborted.statusCode, 200);
     assert.equal(abortCalls, 1);

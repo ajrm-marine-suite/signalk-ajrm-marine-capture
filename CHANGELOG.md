@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.5
+
+- Rename the early recomputed-replay action from **Cancel replay result** to
+  **Interrupt replay**, making clear that it stops the run while preserving an
+  incomplete, unverified evidence ZIP.
+- Align confirmation, progress, failure, notification, and bundle warning
+  wording with the new user-facing term.
+
 ## 0.6.4
 
 - Restore responsive status and Voyage bundles rendering with large voyage

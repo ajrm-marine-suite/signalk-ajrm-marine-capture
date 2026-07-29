@@ -410,12 +410,12 @@ module.exports = function ajrmMarineCapture(app) {
         const coverage = playback.coverage || {};
         if (playback.lastError) {
           throw new Error(
-            `Logger playback failed: ${playback.lastError.message || "unknown playback error"}. Cancel the replay result to preserve partial evidence.`,
+            `Logger playback failed: ${playback.lastError.message || "unknown playback error"}. Interrupt the replay to preserve partial evidence.`,
           );
         }
         if (playback.resultCapture?.active !== true) {
           throw new Error(
-            "Logger's replay-result recorder is no longer active. Cancel the replay result to preserve partial evidence.",
+            "Logger's replay-result recorder is no longer active. Interrupt the replay to preserve partial evidence.",
           );
         }
         const playbackIncomplete =
@@ -442,7 +442,7 @@ module.exports = function ajrmMarineCapture(app) {
           throw new Error("No recomputed replay voyage is active");
         }
         const reason = normalizeComment(req.body?.reason) ||
-          "user cancelled recomputed replay";
+          "user interrupted recomputed replay";
         const bundle = await abortRecomputedReplayVoyage(reason);
         res.json({ ok: true, bundle });
       } catch (error) {
@@ -975,7 +975,7 @@ module.exports = function ajrmMarineCapture(app) {
           );
         }
         throw new Error(
-          `${playbackError}. Capture could not safely abort the armed result recorder: ${abortError?.message || "unknown abort failure"}. Use Cancel replay result or restart Signal K.`,
+          `${playbackError}. Capture could not safely abort the armed result recorder: ${abortError?.message || "unknown abort failure"}. Use Interrupt replay or restart Signal K.`,
         );
       }
       currentVoyage.ajrmMarineLogger = {
@@ -1167,7 +1167,7 @@ module.exports = function ajrmMarineCapture(app) {
         },
       );
       voyage.stoppedAt = stoppedAt;
-      voyage.stopReason = `Recomputed replay cancelled: ${reason}`;
+      voyage.stopReason = `Recomputed replay interrupted: ${reason}`;
       voyage.incomplete = true;
       voyage.recomputationVerified = false;
       voyage.aborted = true;
@@ -1190,7 +1190,7 @@ module.exports = function ajrmMarineCapture(app) {
         appendVoyageEvent(
           voyage,
           "capture-copy-warning",
-          "The cancelled replay produced no non-empty partial Logger segments",
+          "The interrupted replay produced no non-empty partial Logger segments",
         );
       }
       await writeJson(
@@ -1227,7 +1227,7 @@ module.exports = function ajrmMarineCapture(app) {
         voyageId: voyage.id,
         leaf: "abort",
         message:
-          "Recomputed replay cancelled. Partial evidence was saved in an incomplete, unverified voyage ZIP.",
+          "Recomputed replay interrupted. Partial evidence was saved in an incomplete, unverified voyage ZIP.",
         state: "alert",
       });
       addEvent("voyage-aborted", `${voyage.id}: incomplete ZIP prepared`);
@@ -2360,7 +2360,7 @@ module.exports = function ajrmMarineCapture(app) {
         "Capture files may contain AJRM Marine Logger backfill followed by live records. Use captureIndex for timestamp order, overlap and duplicate guidance before scanning large logs.",
         "If captureFileMode is reference, raw AJRM Marine Logger files were not copied into the bundle; use captureReferences on this server to locate the source recordings.",
         voyage.recomputedReplay?.incomplete === true
-          ? "WARNING: this recomputed replay was interrupted or cancelled. It is incomplete and unverified, preserves partial evidence only, and must not be treated as proof that recalculation completed."
+          ? "WARNING: this recomputed replay was interrupted. It is incomplete and unverified, preserves partial evidence only, and must not be treated as proof that recalculation completed."
           : "If recomputedReplay is present, this portable bundle was captured from fresh-wall-time replay of the listed sensor source identities; use parentVoyage, playbackMode, rate, sourcePolicy and sourceFilterStats to audit it.",
       ],
     };

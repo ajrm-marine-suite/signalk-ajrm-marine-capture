@@ -108,8 +108,8 @@ ZIP** can finalise the child, and it fails closed unless Logger confirms
 complete pre-indexed coverage, completes the calculation quiet period, and
 Capture copies every segment in Logger's result manifest into the ZIP.
 
-If Logger stops or reports an error before complete coverage, use **Cancel
-replay result**. After confirmation, Logger aborts and finalises its partial
+If Logger stops or reports an error before complete coverage, use **Interrupt
+replay**. After confirmation, Logger aborts and finalises its partial
 result segments without a calculation quiet-period wait. Capture preserves
 those segments in a ZIP explicitly marked `incomplete`, `verified: false`, and
 `aborted`; it never promotes that ZIP to a completed recomputation result. If

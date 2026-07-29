@@ -37,7 +37,8 @@ test("Recorder command failures keep the error visible while clearing pending st
 test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(htmlSource, /id="startReplayCaptureButton"/);
   assert.match(htmlSource, /id="stopReplayCaptureButton"/);
-  assert.match(htmlSource, /id="cancelReplayCaptureButton"/);
+  assert.match(htmlSource, /id="interruptReplayCaptureButton"/);
+  assert.match(htmlSource, />Interrupt replay<\/button>/);
   assert.match(htmlSource, /immediately starts the sensor replay at 1x/);
   assert.match(appSource, /"\/voyage\/replay\/start"/);
   assert.match(appSource, /"\/voyage\/replay\/stop"/);
@@ -55,6 +56,6 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   );
   assert.match(appSource, /playback\.lastError/);
   assert.match(appSource, /cursor \$\{cursor\}\/\$\{totalLines\}/);
-  assert.match(appSource, /Cancel now to preserve the incomplete evidence ZIP/);
+  assert.match(appSource, /Interrupt now to preserve the incomplete evidence ZIP/);
   assert.match(appSource, /window\.confirm/);
 });
