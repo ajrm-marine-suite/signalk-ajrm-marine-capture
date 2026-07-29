@@ -5,6 +5,12 @@
 AJRM Marine Capture is a Signal K voyage recorder and diagnostic bundle orchestrator
 for AJRM Marine suite testing and real sailing review.
 
+Version `0.6.8` builds temporary portable voyage downloads in a private,
+disk-backed folder beside the voyage store instead of the Pi's RAM-backed
+`/tmp`. Completed transfers, interrupted browser transfers, and failed builds
+remove their workspace; Capture startup also removes precisely named remnants
+left by an earlier crash, including legacy workspaces in `/tmp`.
+
 Version `0.6.4` keeps the Capture status page and its Voyage bundles panel
 responsive with large archives by reading and caching only ZIP index metadata.
 
@@ -126,6 +132,8 @@ same-origin download path. Large bundles are streamed directly instead of
 being loaded into a JavaScript `Blob`, avoiding a second full-size copy in
 browser memory on iPhone, iPad, and desktop browsers. Reference-mode bundles
 may still take time to start because Capture must first build the portable ZIP.
+That temporary assembly uses disk storage and is removed after the transfer;
+it cannot consume the Pi's RAM disk.
 
 The child bundle's compact DR track and copied DR Plotter fixes retain
 operational/integrity assurance, comparison availability, GPS dependence,

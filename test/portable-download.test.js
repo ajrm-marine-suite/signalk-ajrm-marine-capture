@@ -8,6 +8,7 @@ const createPlugin = require("../plugin");
 
 const {
   buildPortableDownloadBundle,
+  cleanupPortableDownloadWorkspaces,
   reconcilePortableCaptureReferences,
   rewritePortableDownloadEvents,
 } = createPlugin._private;
@@ -40,6 +41,51 @@ test("already-portable download remains unchanged without external Logger files"
   assert.equal(
     preserved.readAsText(`capture/${captureFileName}`),
     "embedded-capture",
+  );
+});
+
+test("failed portable download preparation removes its disk-backed workspace", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-portable-failure-"),
+  );
+  const stagingRoot = path.join(directory, "staging");
+  const sourcePath = path.join(directory, "voyage-reference.zip");
+  const missingCapture = path.join(directory, "missing-capture.jsonl.gz");
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    captureFileMode: "reference",
+    captureReferences: [{
+      fileName: path.basename(missingCapture),
+      sourcePath: missingCapture,
+    }],
+  })));
+  zip.writeZip(sourcePath);
+
+  await assert.rejects(
+    buildPortableDownloadBundle(
+      sourcePath,
+      path.basename(sourcePath),
+      stagingRoot,
+    ),
+    /Cannot prepare a complete portable voyage/,
+  );
+  assert.deepEqual(await fs.readdir(stagingRoot), []);
+});
+
+test("startup cleanup removes only portable download workspaces", async () => {
+  const directory = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-portable-cleanup-"),
+  );
+  await fs.mkdir(
+    path.join(directory, "ajrm-marine-voyage-download-A1b2C3"),
+  );
+  await fs.mkdir(path.join(directory, "ajrm-marine-voyage-download-not-ours"));
+  await fs.mkdir(path.join(directory, "keep-me"));
+
+  assert.equal(await cleanupPortableDownloadWorkspaces([directory]), 1);
+  assert.deepEqual(
+    await fs.readdir(directory),
+    ["ajrm-marine-voyage-download-not-ours", "keep-me"],
   );
 });
 

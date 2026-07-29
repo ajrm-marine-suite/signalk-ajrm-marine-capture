@@ -37,6 +37,8 @@ const MAX_OBSERVATIONS_PER_VOYAGE = 1000;
 const MAX_OBSERVATIONS_RETURNED = 200;
 const MAX_PARENT_OBSERVATIONS_BYTES = 5 * 1024 * 1024;
 const MAX_VOYAGE_INDEX_BYTES = 2 * 1024 * 1024;
+const PORTABLE_DOWNLOAD_DIRECTORY_PREFIX = "ajrm-marine-voyage-download-";
+const PORTABLE_DOWNLOAD_STAGING_DIRECTORY = ".portable-download-work";
 const voyageBundleMetadataCache = new Map();
 const voyageBundleMetadataJobs = new Map();
 const DR_PLOTTER_FIXES_FILE = path.join(
@@ -217,8 +219,11 @@ module.exports = function ajrmMarineCapture(app) {
     notificationSequence = 0;
     ensureDirectories();
     exposeCaptureApi();
-    startupRecoveryPromise = closeIncompleteVoyagesOnStartup().catch((error) => {
-      logError("startup voyage recovery failed", error);
+    startupRecoveryPromise = Promise.all([
+      cleanupPortableDownloadWorkspacesOnStartup(),
+      closeIncompleteVoyagesOnStartup(),
+    ]).catch((error) => {
+      logError("startup recovery failed", error);
     });
     deltaListener = (delta) => onDelta(delta);
     app.signalk.on("delta", deltaListener);
@@ -288,14 +293,26 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.get("/voyages/:file/download", async (req, res) => {
       let download = null;
+      let responseClosed = false;
+      const cleanupDownload = () => {
+        if (download) download.cleanup().catch(() => {});
+      };
+      res.once("close", () => {
+        responseClosed = true;
+        cleanupDownload();
+      });
       try {
         download = await prepareVoyageDownload(req.params.file);
-        res.download(download.path, download.fileName, () => {
-          download.cleanup().catch(() => {});
-        });
+        if (responseClosed || res.destroyed) {
+          await download.cleanup();
+          return;
+        }
+        res.download(download.path, download.fileName, cleanupDownload);
       } catch (error) {
-        if (download) download.cleanup().catch(() => {});
-        res.status(404).json({ ok: false, error: "Voyage bundle not found" });
+        cleanupDownload();
+        if (!responseClosed && !res.destroyed && !res.headersSent) {
+          res.status(404).json({ ok: false, error: "Voyage bundle not found" });
+        }
       }
     });
 
@@ -494,6 +511,23 @@ module.exports = function ajrmMarineCapture(app) {
 
   function ensureDirectories() {
     fs.mkdirSync(options.voyageDirectory, { recursive: true });
+  }
+
+  function portableDownloadStagingRoot() {
+    return path.join(options.voyageDirectory, PORTABLE_DOWNLOAD_STAGING_DIRECTORY);
+  }
+
+  async function cleanupPortableDownloadWorkspacesOnStartup() {
+    const removed = await cleanupPortableDownloadWorkspaces([
+      os.tmpdir(),
+      portableDownloadStagingRoot(),
+    ]);
+    if (removed) {
+      addEvent(
+        "portable-download-recovery",
+        `Removed ${removed} abandoned portable voyage download workspace${removed === 1 ? "" : "s"}`,
+      );
+    }
   }
 
   async function persistPluginConfiguration(changes) {
@@ -763,13 +797,19 @@ module.exports = function ajrmMarineCapture(app) {
     if (!info.isFile() || !fileName.endsWith(".zip")) {
       throw new Error("Voyage bundle not found");
     }
-    const temporaryBundle = await buildPortableDownloadBundle(filePath, fileName);
+    const temporaryBundle = await buildPortableDownloadBundle(
+      filePath,
+      fileName,
+      portableDownloadStagingRoot(),
+    );
+    let cleaned = false;
     return {
       fileName,
       path: temporaryBundle?.path || filePath,
       temporaryBundle,
       async cleanup() {
-        if (temporaryBundle?.directory) {
+        if (!cleaned && temporaryBundle?.directory) {
+          cleaned = true;
           await fs.promises.rm(temporaryBundle.directory, { recursive: true, force: true }).catch(() => {});
         }
       },
@@ -3941,72 +3981,115 @@ async function readVoyageZipIndex(filePath) {
   });
 }
 
-async function buildPortableDownloadBundle(sourceZipPath, fileName) {
+async function buildPortableDownloadBundle(
+  sourceZipPath,
+  fileName,
+  stagingRoot = os.tmpdir(),
+) {
   const index = await readVoyageZipIndex(sourceZipPath);
   if (voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index)) {
     return null;
   }
   const references = Array.isArray(index?.captureReferences) ? index.captureReferences : [];
   if (!references.length) return null;
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ajrm-marine-voyage-download-"));
-  const workDir = path.join(directory, "bundle");
-  const outputPath = path.join(directory, fileName);
-  await fs.promises.mkdir(workDir, { recursive: true });
-  extractZipToDirectory(sourceZipPath, workDir);
-  await fs.promises.mkdir(path.join(workDir, "capture"), { recursive: true });
-  const portableIndexPath = path.join(workDir, "index.json");
-  const portableIndex = await readJson(portableIndexPath) || index;
-  const copiedReferences = [];
-  const embeddedCaptureFiles = await listPortableCaptureFiles(workDir);
-  const copiedNames = new Set(embeddedCaptureFiles);
-  const missingReferences = [];
-  for (const reference of references) {
-    const embeddedName = embeddedCaptureFiles.find(
-      (candidate) =>
-        logicalCaptureFileNameForDownload(candidate) ===
-        logicalCaptureFileNameForDownload(reference?.fileName),
+  await fs.promises.mkdir(stagingRoot, { recursive: true });
+  let directory = null;
+  try {
+    directory = await fs.promises.mkdtemp(
+      path.join(stagingRoot, PORTABLE_DOWNLOAD_DIRECTORY_PREFIX),
     );
-    if (embeddedName) {
-      const embeddedInfo = await fs.promises.stat(
-        path.join(workDir, "capture", embeddedName),
+    const workDir = path.join(directory, "bundle");
+    const outputPath = path.join(directory, fileName);
+    await fs.promises.mkdir(workDir, { recursive: true });
+    extractZipToDirectory(sourceZipPath, workDir);
+    await fs.promises.mkdir(path.join(workDir, "capture"), { recursive: true });
+    const portableIndexPath = path.join(workDir, "index.json");
+    const portableIndex = await readJson(portableIndexPath) || index;
+    const copiedReferences = [];
+    const embeddedCaptureFiles = await listPortableCaptureFiles(workDir);
+    const copiedNames = new Set(embeddedCaptureFiles);
+    const missingReferences = [];
+    for (const reference of references) {
+      const embeddedName = embeddedCaptureFiles.find(
+        (candidate) =>
+          logicalCaptureFileNameForDownload(candidate) ===
+          logicalCaptureFileNameForDownload(reference?.fileName),
       );
-      copiedReferences.push({
-        fileName: embeddedName,
-        bytes: embeddedInfo.size,
-      });
-      continue;
+      if (embeddedName) {
+        const embeddedInfo = await fs.promises.stat(
+          path.join(workDir, "capture", embeddedName),
+        );
+        copiedReferences.push({
+          fileName: embeddedName,
+          bytes: embeddedInfo.size,
+        });
+        continue;
+      }
+      const copied = await copyCaptureReferenceForDownload(
+        reference,
+        path.join(workDir, "capture"),
+        copiedNames,
+      );
+      if (copied) copiedReferences.push(copied);
+      else missingReferences.push(reference.fileName || reference.sourcePath || "unknown");
     }
-    const copied = await copyCaptureReferenceForDownload(reference, path.join(workDir, "capture"), copiedNames);
-    if (copied) copiedReferences.push(copied);
-    else missingReferences.push(reference.fileName || reference.sourcePath || "unknown");
+    const captureFiles = await listPortableCaptureFiles(workDir);
+    if (!captureFiles.length || missingReferences.length) {
+      const unavailable = missingReferences.length || references.length;
+      throw new Error(
+        `Cannot prepare a complete portable voyage: ${unavailable} AJRM Marine Logger capture reference${unavailable === 1 ? "" : "s"} unavailable`,
+      );
+    }
+    portableIndex.originalCaptureFileMode = portableIndex.captureFileMode || "reference";
+    portableIndex.captureFileMode = "portable-download";
+    portableIndex.captureFiles = captureFiles;
+    portableIndex.captureIndex = await buildCaptureIndexForDirectory(workDir, captureFiles);
+    reconcilePortableCaptureReferences(portableIndex, copiedReferences);
+    rewritePortableDownloadEvents(portableIndex, copiedReferences, missingReferences);
+    portableIndex.portableDownload = {
+      createdAt: new Date().toISOString(),
+      copiedCaptureFiles: captureFiles.length,
+      copiedCaptureBytes: copiedReferences.reduce((sum, reference) => sum + Number(reference.bytes || 0), 0),
+      missingReferences,
+    };
+    portableIndex.hints = [
+      ...(Array.isArray(portableIndex.hints) ? portableIndex.hints.filter((hint) => !String(hint).includes("captureFileMode is reference")) : []),
+      "This download was rebuilt on demand from a reference-mode voyage bundle. Copied raw AJRM Marine Logger files are in capture/ when they were still present on this server.",
+    ];
+    await writeJson(portableIndexPath, portableIndex);
+    await writeDirectoryZip(outputPath, workDir);
+    return { path: outputPath, directory };
+  } catch (error) {
+    if (directory) {
+      await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+    throw error;
   }
-  const captureFiles = await listPortableCaptureFiles(workDir);
-  if (!captureFiles.length || missingReferences.length) {
-    await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
-    const unavailable = missingReferences.length || references.length;
-    throw new Error(
-      `Cannot prepare a complete portable voyage: ${unavailable} AJRM Marine Logger capture reference${unavailable === 1 ? "" : "s"} unavailable`,
-    );
+}
+
+async function cleanupPortableDownloadWorkspaces(parentDirectories) {
+  let removed = 0;
+  for (const parentDirectory of new Set(parentDirectories.filter(Boolean))) {
+    const entries = await fs.promises.readdir(parentDirectory, {
+      withFileTypes: true,
+    }).catch(() => []);
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory() ||
+        !new RegExp(
+          `^${PORTABLE_DOWNLOAD_DIRECTORY_PREFIX}[A-Za-z0-9]{6}$`,
+        ).test(entry.name)
+      ) {
+        continue;
+      }
+      await fs.promises.rm(path.join(parentDirectory, entry.name), {
+        recursive: true,
+        force: true,
+      });
+      removed += 1;
+    }
   }
-  portableIndex.originalCaptureFileMode = portableIndex.captureFileMode || "reference";
-  portableIndex.captureFileMode = "portable-download";
-  portableIndex.captureFiles = captureFiles;
-  portableIndex.captureIndex = await buildCaptureIndexForDirectory(workDir, captureFiles);
-  reconcilePortableCaptureReferences(portableIndex, copiedReferences);
-  rewritePortableDownloadEvents(portableIndex, copiedReferences, missingReferences);
-  portableIndex.portableDownload = {
-    createdAt: new Date().toISOString(),
-    copiedCaptureFiles: captureFiles.length,
-    copiedCaptureBytes: copiedReferences.reduce((sum, reference) => sum + Number(reference.bytes || 0), 0),
-    missingReferences,
-  };
-  portableIndex.hints = [
-    ...(Array.isArray(portableIndex.hints) ? portableIndex.hints.filter((hint) => !String(hint).includes("captureFileMode is reference")) : []),
-    "This download was rebuilt on demand from a reference-mode voyage bundle. Copied raw AJRM Marine Logger files are in capture/ when they were still present on this server.",
-  ];
-  await writeJson(portableIndexPath, portableIndex);
-  await writeDirectoryZip(outputPath, workDir);
-  return { path: outputPath, directory };
+  return removed;
 }
 
 function voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index) {
@@ -4473,6 +4556,7 @@ module.exports._private = {
   buildPortableDownloadBundle,
   biteReportOverlapsVoyage,
   cleanHarbourName,
+  cleanupPortableDownloadWorkspaces,
   defaultVoyageComment,
   drTrackSample,
   filterDrPlotFixesForVoyage,
