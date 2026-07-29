@@ -288,55 +288,6 @@ li {
   font-weight: 700;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: rgba(3, 10, 19, 0.72);
-}
-
-.modal-backdrop[hidden] {
-  display: none;
-}
-
-.modal-panel {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 16px;
-  width: min(520px, 100%);
-  border: 1px solid #55a4ff;
-  border-radius: 16px;
-  padding: 18px;
-  background: #0d1b2e;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
-}
-
-.modal-panel h2 {
-  margin-bottom: 6px;
-}
-
-.modal-panel p {
-  margin-bottom: 14px;
-}
-
-.spinner {
-  width: 34px;
-  height: 34px;
-  border: 4px solid #20354f;
-  border-top-color: #55a4ff;
-  border-radius: 50%;
-  animation: spin 900ms linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (max-width: 620px) {
   .selected-bundle-actions {
     display: grid;

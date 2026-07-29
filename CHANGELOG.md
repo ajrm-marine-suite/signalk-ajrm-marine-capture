@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6
+
+- Stream voyage ZIP downloads through the browser's native download path
+  instead of loading the complete archive into a JavaScript `Blob`, preventing
+  large bundles from exhausting browser memory before the save begins.
+
 ## 0.6.5
 
 - Rename the early recomputed-replay action from **Cancel replay result** to

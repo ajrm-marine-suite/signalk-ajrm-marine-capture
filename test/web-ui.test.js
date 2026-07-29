@@ -59,3 +59,21 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(appSource, /Interrupt now to preserve the incomplete evidence ZIP/);
   assert.match(appSource, /window\.confirm/);
 });
+
+test("Voyage downloads stream through the browser without buffering the ZIP in memory", () => {
+  assert.doesNotMatch(appSource, /response\.blob\(\)/);
+  assert.doesNotMatch(appSource, /URL\.createObjectURL/);
+  assert.doesNotMatch(appSource, /fetch\(bundle\.downloadUrl/);
+  assert.match(
+    appSource,
+    /elements\.downloadSelectedBundle\.href = selectedBundle\.downloadUrl/,
+  );
+  assert.match(
+    appSource,
+    /The browser will stream the ZIP directly when it is ready/,
+  );
+  assert.match(
+    appSource,
+    /classList\.contains\("disabled"\)\) \{\s*event\.preventDefault\(\)/s,
+  );
+});

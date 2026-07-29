@@ -18,8 +18,6 @@ const elements = {
   events: document.getElementById("events"),
   voyageBundles: document.getElementById("voyageBundles"),
   downloadSelectedBundle: document.getElementById("downloadSelectedBundle"),
-  downloadPopup: document.getElementById("downloadPopup"),
-  downloadPopupMessage: document.getElementById("downloadPopupMessage"),
   deleteSelectedBundle: document.getElementById("deleteSelectedBundle"),
   selectedBundleInfo: document.getElementById("selectedBundleInfo"),
   startButton: document.getElementById("startButton"),
@@ -78,11 +76,17 @@ elements.deleteSelectedBundle.addEventListener("click", () => {
   if (selectedBundle) deleteVoyage(selectedBundle.fileName);
 });
 elements.downloadSelectedBundle.addEventListener("click", (event) => {
-  event.preventDefault();
   if (elements.downloadSelectedBundle.classList.contains("disabled")) {
+    event.preventDefault();
     return;
   }
-  downloadSelectedVoyage(selectedBundle);
+  if (!selectedBundle?.downloadUrl) {
+    event.preventDefault();
+    return;
+  }
+  elements.banner.classList.remove("error");
+  elements.banner.textContent =
+    `Preparing ${selectedBundle.fileName}. The browser will stream the ZIP directly when it is ready.`;
 });
 
 refresh();
@@ -472,53 +476,6 @@ function updateSelectedBundleActions() {
 async function deleteVoyage(fileName) {
   if (!window.confirm(`Delete voyage bundle ${fileName}? Make sure you have downloaded it first.`)) return;
   await command(`/voyages/${encodeURIComponent(fileName)}/delete`, {});
-}
-
-async function downloadSelectedVoyage(bundle) {
-  if (!bundle || !bundle.downloadUrl) return;
-  showDownloadPopup(bundle);
-  elements.banner.classList.remove("error");
-  elements.downloadSelectedBundle.classList.add("disabled");
-  elements.downloadSelectedBundle.setAttribute("aria-disabled", "true");
-  try {
-    const response = await fetch(bundle.downloadUrl, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = bundle.fileName || downloadFileName(response) || "ajrm-marine-voyage.zip";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => window.URL.revokeObjectURL(url), 30000);
-    elements.banner.textContent = `Download ready: ${link.download}`;
-  } catch (error) {
-    elements.banner.textContent = error.message || "Download failed";
-    elements.banner.classList.add("error");
-  } finally {
-    hideDownloadPopup();
-    updateSelectedBundleActions();
-  }
-}
-
-function showDownloadPopup(bundle) {
-  const name = bundle?.fileName || "the selected voyage";
-  elements.banner.textContent =
-    "Preparing download: collating logs and compressing the voyage bundle.";
-  elements.downloadPopupMessage.textContent =
-    `AJRM Marine Capture is collating logs and compressing ${name}. This may take some time.`;
-  elements.downloadPopup.hidden = false;
-}
-
-function hideDownloadPopup() {
-  elements.downloadPopup.hidden = true;
-}
-
-function downloadFileName(response) {
-  const disposition = response.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename="?([^";]+)"?/i);
-  return match ? match[1] : "";
 }
 
 function captureText(ajrmMarineLogger) {

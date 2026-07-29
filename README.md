@@ -121,6 +121,12 @@ Portable download preparation is idempotent: if a voyage ZIP already contains
 every declared `captureFiles` entry, Capture serves that ZIP unchanged and does
 not depend on the original Logger files still being present.
 
+The Capture web app downloads voyage ZIPs through the browser's native
+same-origin download path. Large bundles are streamed directly instead of
+being loaded into a JavaScript `Blob`, avoiding a second full-size copy in
+browser memory on iPhone, iPad, and desktop browsers. Reference-mode bundles
+may still take time to start because Capture must first build the portable ZIP.
+
 The child bundle's compact DR track and copied DR Plotter fixes retain
 operational/integrity assurance, comparison availability, GPS dependence,
 leeway/current origin, and Navigation Reference provenance. Missing numeric
