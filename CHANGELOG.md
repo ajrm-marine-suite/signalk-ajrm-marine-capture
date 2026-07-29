@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7
+
+- Run the test suite with a Node 20-compatible file glob so the advisory
+  armv7/Cerbo GX job executes the tests instead of rejecting the quoted
+  recursive pattern.
+
 ## 0.6.6
 
 - Stream voyage ZIP downloads through the browser's native download path
