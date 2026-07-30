@@ -1120,12 +1120,17 @@ module.exports = function ajrmMarineCapture(app) {
             "AJRM Marine Logger did not confirm complete replay coverage and result segments",
           );
         }
+        const verification = recomputedReplayVerification(
+          voyage.recomputedReplay,
+          replayResult,
+        );
         voyage.recomputedReplay = {
           ...voyage.recomputedReplay,
           status: "complete",
           complete: true,
           incomplete: false,
-          verified: true,
+          verified: verification.verified,
+          verificationFailure: verification.failure,
           rate: replayResult?.rate ?? voyage.recomputedReplay.rate,
           sourcePolicy:
             replayResult?.sourcePolicy || voyage.recomputedReplay.sourcePolicy,
@@ -1135,9 +1140,12 @@ module.exports = function ajrmMarineCapture(app) {
           result: replayResult,
         };
         voyage.incomplete = false;
-        voyage.recomputationVerified = true;
+        voyage.recomputationVerified = verification.verified;
         voyage.aborted = false;
-        await writeRecomputedCompletionCheckpoint(voyage, replayResult);
+        await writeRecomputedCompletionCheckpoint(voyage, replayResult, {
+          verified: verification.verified,
+          verificationFailure: verification.failure,
+        });
       }
       const stoppedAt = new Date().toISOString();
       voyage.stoppedAt = stoppedAt;
@@ -1274,15 +1282,21 @@ module.exports = function ajrmMarineCapture(app) {
   async function writeRecomputedCompletionCheckpoint(
     voyage,
     replayResult,
-    { completedAt = new Date().toISOString() } = {},
+    {
+      completedAt = new Date().toISOString(),
+      verified = true,
+      verificationFailure = null,
+    } = {},
   ) {
     const checkpoint = {
       contract: "ajrm-marine-recomputed-completion",
       contractVersion: 1,
       voyageId: voyage.id,
       completedAt,
-      verified: true,
-      recomputationVerified: true,
+      completionConfirmed: true,
+      verified: verified === true,
+      recomputationVerified: verified === true,
+      verificationFailure,
       recomputedReplay: {
         ...voyage.recomputedReplay,
         result: replayResult,
@@ -1293,10 +1307,12 @@ module.exports = function ajrmMarineCapture(app) {
       path.join(voyage.directory, RECOMPUTED_COMPLETION_RELATIVE_PATH),
       checkpoint,
     );
-    finalisation.recomputationVerified = true;
+    finalisation.recomputationVerified = verified === true;
     finalisation.checkpoint = RECOMPUTED_COMPLETION_RELATIVE_PATH;
     updateFinalisation("logger-closed", {
-      message: "Logger closed; recomputation completion checkpoint saved",
+      message: verified
+        ? "Logger closed; verified recomputation checkpoint saved"
+        : "Logger closed; unverified recomputation checkpoint saved",
     });
   }
 
@@ -1442,7 +1458,7 @@ module.exports = function ajrmMarineCapture(app) {
     const completionCheckpoint = await readJson(
       path.join(directory, RECOMPUTED_COMPLETION_RELATIVE_PATH),
     );
-    const completedRecomputation = verifiedRecomputedCompletion(
+    const completedRecomputation = completedRecomputedCompletion(
       id,
       completionCheckpoint,
       existingIndex,
@@ -1492,17 +1508,21 @@ module.exports = function ajrmMarineCapture(app) {
       interruptedByRestart: true,
     };
     if (completedRecomputation) {
+      const recomputationVerified =
+        completedRecomputation.recomputationVerified === true;
       voyage.stopReason =
         "Signal K restarted after Logger completed; portable ZIP finalisation recovered";
       voyage.incomplete = false;
-      voyage.recomputationVerified = true;
+      voyage.recomputationVerified = recomputationVerified;
       voyage.recomputedReplay = {
         ...voyage.recomputedReplay,
         ...completedRecomputation.recomputedReplay,
         status: "complete",
         complete: true,
         incomplete: false,
-        verified: true,
+        verified: recomputationVerified,
+        verificationFailure:
+          completedRecomputation.verificationFailure || null,
         packagingRecoveredAfterRestart: true,
         recoveredAt: now,
         result: completedRecomputation.result,
@@ -1536,13 +1556,19 @@ module.exports = function ajrmMarineCapture(app) {
       await writeRecomputedCompletionCheckpoint(
         voyage,
         completedRecomputation.result,
-        { completedAt: completedRecomputation.completedAt },
+        {
+          completedAt: completedRecomputation.completedAt,
+          verified: completedRecomputation.recomputationVerified,
+          verificationFailure:
+            completedRecomputation.verificationFailure || null,
+        },
       );
     }
     finalisation.loggerClosed = true;
     finalisation.loggerClosedAt =
       completedRecomputation?.completedAt || now;
-    finalisation.recomputationVerified = Boolean(completedRecomputation);
+    finalisation.recomputationVerified =
+      completedRecomputation?.recomputationVerified === true;
     updateFinalisation("recovery", {
       message: completedRecomputation
         ? "Recovering completed recomputation ZIP finalisation"
@@ -1574,7 +1600,9 @@ module.exports = function ajrmMarineCapture(app) {
           : null,
       captureFiles: voyage.captureFiles,
       note: completedRecomputation
-        ? "Logger had already completed and verified the recomputed replay. Capture resumed only the later evidence and ZIP finalisation work."
+        ? completedRecomputation.recomputationVerified === true
+          ? "Logger had already completed and verified the recomputed replay. Capture resumed only the later evidence and ZIP finalisation work."
+          : "Logger had completed the replay, but live-input isolation was not verified. Capture resumed ZIP finalisation without certifying the recomputation."
         : "This voyage was not resumed because Signal K was stopped or restarted before normal voyage shutdown.",
     });
     const index = await writeVoyageIndex(voyage);
@@ -1602,7 +1630,7 @@ module.exports = function ajrmMarineCapture(app) {
     return bundle;
   }
 
-  function verifiedRecomputedCompletion(
+  function completedRecomputedCompletion(
     voyageId,
     checkpoint,
     existingIndex,
@@ -1612,8 +1640,13 @@ module.exports = function ajrmMarineCapture(app) {
       checkpoint?.contract === "ajrm-marine-recomputed-completion" &&
       checkpoint?.contractVersion === 1 &&
       checkpoint?.voyageId === voyageId &&
-      checkpoint?.verified === true &&
-      checkpoint?.recomputationVerified === true
+      (
+        checkpoint?.completionConfirmed === true ||
+        (
+          checkpoint?.verified === true &&
+          checkpoint?.recomputationVerified === true
+        )
+      )
     ) {
       candidates.push({
         source: "completion-checkpoint",
@@ -1626,9 +1659,7 @@ module.exports = function ajrmMarineCapture(app) {
     if (
       existingIndex?.id === voyageId &&
       existingIndex?.incomplete !== true &&
-      existingIndex?.recomputationVerified === true &&
-      existingIndex?.recomputedReplay?.complete === true &&
-      existingIndex?.recomputedReplay?.verified === true
+      existingIndex?.recomputedReplay?.complete === true
     ) {
       candidates.push({
         source: "completed-index",
@@ -1657,7 +1688,15 @@ module.exports = function ajrmMarineCapture(app) {
       ) {
         continue;
       }
-      return candidate;
+      const verification = recomputedReplayVerification(
+        candidate.recomputedReplay,
+        result,
+      );
+      return {
+        ...candidate,
+        recomputationVerified: verification.verified,
+        verificationFailure: verification.failure,
+      };
     }
     return null;
   }
@@ -2765,6 +2804,8 @@ module.exports = function ajrmMarineCapture(app) {
         "If captureFileMode is reference, raw AJRM Marine Logger files were not copied into the bundle; use captureReferences on this server to locate the source recordings.",
         voyage.recomputedReplay?.incomplete === true
           ? "WARNING: this recomputed replay was interrupted. It is incomplete and unverified, preserves partial evidence only, and must not be treated as proof that recalculation completed."
+          : voyage.recomputedReplay?.verified === false
+            ? `WARNING: this recomputed replay completed but is unverified${voyage.recomputedReplay.verificationFailure ? `: ${voyage.recomputedReplay.verificationFailure}` : "."} It must not be treated as proof that recalculation was isolated from live physical input.`
           : "If recomputedReplay is present, this portable bundle was captured from fresh-wall-time replay of the listed sensor source identities; use parentVoyage, playbackMode, rate, sourcePolicy and sourceFilterStats to audit it.",
       ],
     };
@@ -5054,6 +5095,20 @@ function safeBaseName(value) {
   return path.basename(String(value || ""));
 }
 
+function recomputedReplayVerification(recomputedReplay, replayResult) {
+  if (recomputedReplay?.liveInputIsolationRequired !== true) {
+    return { verified: true, failure: null };
+  }
+  if (replayResult?.liveInputIsolation?.valid === true) {
+    return { verified: true, failure: null };
+  }
+  return {
+    verified: false,
+    failure:
+      "AJRM Marine Logger reported that live-input isolation was not valid",
+  };
+}
+
 module.exports._private = {
   buildPortableDownloadBundle,
   biteReportOverlapsVoyage,
@@ -5069,6 +5124,7 @@ module.exports._private = {
   parseObservationRecords,
   publicObservationLog,
   reconcilePortableCaptureReferences,
+  recomputedReplayVerification,
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,
   speedKnotsFromMps,

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.12
+
+- Require Logger's explicit live-input-isolation result before marking a
+  completed recomputed voyage verified. A replay that reaches full input and
+  result-segment coverage but fails isolation is still packaged as complete
+  diagnostic evidence with a prominent unverified warning.
+- Persist completion separately from verification so Signal K can resume a
+  later ZIP build after restart without either losing the completed result or
+  incorrectly certifying failed isolation.
+- Revalidate isolation during startup recovery, including downgrading an older
+  checkpoint that incorrectly claimed verification.
+
 ## 0.6.11
 
 - Show separate replay and finalisation progress bars. Long phases without

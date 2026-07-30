@@ -8,6 +8,216 @@ const path = require("node:path");
 const test = require("node:test");
 const AdmZip = require("adm-zip");
 const createPlugin = require("../plugin");
+const {
+  recomputedReplayVerification,
+} = createPlugin._private;
+
+test("recomputed replay verification fails closed when required isolation is invalid", () => {
+  assert.deepEqual(
+    recomputedReplayVerification(
+      { liveInputIsolationRequired: true },
+      { liveInputIsolation: { valid: false, physicalUpdates: 2 } },
+    ),
+    {
+      verified: false,
+      failure:
+        "AJRM Marine Logger reported that live-input isolation was not valid",
+    },
+  );
+  assert.equal(
+    recomputedReplayVerification(
+      { liveInputIsolationRequired: true },
+      { liveInputIsolation: { valid: true } },
+    ).verified,
+    true,
+  );
+  assert.equal(
+    recomputedReplayVerification({}, {}).verified,
+    true,
+    "ordinary and legacy captures without an isolation requirement remain compatible",
+  );
+});
+
+test("completed replay with failed isolation is packaged but never certified", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-unverified-complete-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const capturedAt = new Date().toISOString();
+  const fileName =
+    `capture-${capturedAt.replace(/[:.]/g, "-")}.jsonl`;
+  const content = `${JSON.stringify({
+    capturedAt,
+    replayRole: "sensor-input",
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "YDEN.2",
+        timestamp: capturedAt,
+        values: [{
+          path: "navigation.position",
+          value: { latitude: 55.8, longitude: -5.7 },
+        }],
+      }],
+    },
+  })}\n`;
+  await fs.writeFile(path.join(capturesDirectory, fileName), content);
+  const sourcePolicy = {
+    id: "strict-recorded-sensor-source-allowlist-v1",
+    resolvedSensorSourceIds: ["YDEN.2"],
+    sensorSourceIds: ["YDEN.2"],
+  };
+  const coverage = {
+    complete: false,
+    inputComplete: false,
+    resultSegmentsComplete: false,
+    preparedComplete: true,
+    startCursor: 0,
+    cursor: 0,
+    totalLines: 1,
+    replayableLines: 1,
+    replayedLines: 0,
+    segmentsTotal: 1,
+    segmentsCompleted: 0,
+    lastReason: "loaded",
+  };
+  const resultSegment = {
+    index: 0,
+    fileName,
+    startedAt: capturedAt,
+    from: capturedAt,
+    to: capturedAt,
+    lines: 1,
+    bytes: Buffer.byteLength(content),
+    compressed: false,
+    finalized: true,
+    available: true,
+    error: null,
+  };
+  const replayResult = {
+    schemaVersion: 1,
+    kind: "recomputed-replay",
+    sourcePolicy,
+    coverage: {
+      ...coverage,
+      complete: true,
+      inputComplete: true,
+      resultSegmentsComplete: true,
+      cursor: 1,
+      replayedLines: 1,
+      segmentsCompleted: 1,
+      lastReason: "end of capture",
+    },
+    liveInputIsolation: {
+      required: true,
+      valid: false,
+      physicalUpdates: 1,
+      physicalValues: 1,
+      sources: { "YDEN.2": { updates: 1, values: 1 } },
+    },
+    resultSegments: {
+      schemaVersion: 1,
+      complete: true,
+      segmentsTotal: 1,
+      segmentsFinalized: 1,
+      lines: 1,
+      bytes: Buffer.byteLength(content),
+      errors: [],
+      segments: [resultSegment],
+    },
+  };
+  const loggerStatus = {
+    ok: true,
+    playback: {
+      loaded: true,
+      active: false,
+      paused: false,
+      mode: "sensor-sources",
+      replayMode: "sensor-only",
+      rate: 1,
+      fileName: "parent.jsonl",
+      voyageFileName: "parent.zip",
+      sourceKind: "voyages",
+      sourcePolicy,
+      sourceCatalog: { "YDEN.2": { updates: 1, values: 1 } },
+      resultCapture: { active: false },
+      lastError: null,
+      lastReason: "loaded",
+      coverage,
+    },
+  };
+  const app = fakeApp({
+    async status() {
+      return loggerStatus;
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+    async startReplayResultCapture() {
+      loggerStatus.playback.resultCapture.active = true;
+      return {
+        active: true,
+        kind: "recomputed-replay",
+        fileName,
+        startedAt: capturedAt,
+      };
+    },
+    async startPlayback() {
+      loggerStatus.playback.active = true;
+      loggerStatus.playback.lastReason = "playing";
+      return loggerStatus.playback;
+    },
+    async stopReplayResultCapture() {
+      return {
+        active: false,
+        kind: "recomputed-replay",
+        fileName,
+        replayResult,
+      };
+    },
+  });
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: false,
+  });
+
+  try {
+    const started = await invoke(routes, "POST", "/voyage/replay/start", {});
+    assert.equal(started.statusCode, 200);
+    loggerStatus.playback.active = false;
+    loggerStatus.playback.lastReason = "end of capture";
+    loggerStatus.playback.coverage = replayResult.coverage;
+    const stopped = await invoke(routes, "POST", "/voyage/replay/stop", {});
+    assert.equal(stopped.statusCode, 200);
+    const zip = new AdmZip(stopped.body.bundle.path);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.incomplete, false);
+    assert.equal(index.recomputedReplay.complete, true);
+    assert.equal(index.recomputedReplay.verified, false);
+    assert.equal(index.recomputationVerified, false);
+    assert.match(index.hints.join("\n"), /completed but is unverified/i);
+    const checkpoint = JSON.parse(
+      zip.readAsText("system/recomputed-replay-completion.json"),
+    );
+    assert.equal(checkpoint.completionConfirmed, true);
+    assert.equal(checkpoint.recomputationVerified, false);
+    assert.equal(checkpoint.verified, false);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 test("recomputed replay start and stop builds a portable child voyage with audit metadata", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-capture-replay-"));
@@ -145,6 +355,12 @@ test("recomputed replay start and stop builds a portable child voyage with audit
         valuesSeen: 2,
         valuesSent: 1,
         valuesExcluded: 1,
+      },
+      liveInputIsolation: {
+        required: true,
+        valid: true,
+        physicalUpdates: 0,
+        physicalValues: 0,
       },
       coverage: {
         complete: true,
