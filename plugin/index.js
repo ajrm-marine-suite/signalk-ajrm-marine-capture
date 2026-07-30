@@ -3145,7 +3145,17 @@ module.exports = function ajrmMarineCapture(app) {
     const values = [
       { path: "plugins.ajrmMarineCapture.version", value: packageInfo.version },
       { path: "plugins.ajrmMarineCapture.enabled", value: options.enabled },
-      { path: "plugins.ajrmMarineCapture.state", value: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled" },
+      {
+        path: "plugins.ajrmMarineCapture.state",
+        value:
+          finalisation?.state === "running"
+            ? "finalising"
+            : currentVoyage
+              ? "recording"
+              : options.enabled
+                ? "watching"
+                : "disabled",
+      },
       { path: "plugins.ajrmMarineCapture.speedKnots", value: speedKnots },
       { path: "plugins.ajrmMarineCapture.sogKnots", value: sogKnots },
       { path: "plugins.ajrmMarineCapture.stwKnots", value: stwKnots },

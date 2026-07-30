@@ -5,6 +5,13 @@
 AJRM Marine Capture is a Signal K voyage recorder and diagnostic bundle orchestrator
 for AJRM Marine suite testing and real sailing review.
 
+Version `0.6.11` adds separate replay and finalisation progress bars to the
+Capture page. Logger closing, evidence collection, and indexing show an
+indeterminate activity bar; ZIP construction switches to exact file, byte, and
+percentage progress. The current finalisation is kept separate from the
+previous completed bundle, so a long-running stage cannot display stale
+completion details or misleading replay controls.
+
 Version `0.6.10` builds voyage ZIPs as disk-backed streams. Existing compressed
 Logger `.jsonl.gz` segments are stored directly in the ZIP without a second
 compression pass, avoiding a whole-voyage memory copy and unnecessary Pi CPU

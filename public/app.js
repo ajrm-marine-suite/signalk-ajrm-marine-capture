@@ -28,8 +28,10 @@ const elements = {
   replayCaptureInfo: document.getElementById("replayCaptureInfo"),
   replayPlaybackState: document.getElementById("replayPlaybackState"),
   replayProgressValue: document.getElementById("replayProgressValue"),
+  replayProgressBar: document.getElementById("replayProgressBar"),
   replaySegmentsValue: document.getElementById("replaySegmentsValue"),
   replayFinaliseValue: document.getElementById("replayFinaliseValue"),
+  replayFinaliseProgressBar: document.getElementById("replayFinaliseProgressBar"),
   commentInput: document.getElementById("commentInput"),
   saveCommentButton: document.getElementById("saveCommentButton"),
 };
@@ -237,25 +239,32 @@ function renderReplayRecorder(status) {
     !playback.active &&
     !playback.paused &&
     Number(playback.cursor || 0) === Number(playback.startCursor || 0);
-  const playbackComplete =
+  const replayFinished =
     coverage.complete === true &&
     coverage.preparedComplete === true &&
     (playback.lastReason || coverage.lastReason) === "end of capture" &&
     !playback.active &&
     !playback.paused &&
-    !playbackError &&
-    resultCaptureActive;
+    !playbackError;
+  const playbackComplete = replayFinished && resultCaptureActive;
+  const finalisationRunning = status.finalisation?.state === "running";
   const busy = pendingReplayAction === "start" ||
     pendingReplayAction === "stop" ||
     pendingReplayAction === "abort";
-  elements.startReplayCaptureButton.disabled = busy || Boolean(currentVoyage) || !ready;
+  elements.startReplayCaptureButton.disabled =
+    busy || finalisationRunning || Boolean(currentVoyage) || !ready;
   elements.stopReplayCaptureButton.disabled =
-    busy || !recomputedActive || !playbackComplete;
-  elements.interruptReplayCaptureButton.disabled = busy || !recomputedActive;
+    busy || finalisationRunning || !recomputedActive || !playbackComplete;
+  elements.interruptReplayCaptureButton.disabled =
+    busy || finalisationRunning || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
     pendingReplayAction === "start" ? "Starting..." : "Start replay result";
   elements.stopReplayCaptureButton.textContent =
-    pendingReplayAction === "stop" ? "Building ZIP..." : "Stop and build ZIP";
+    pendingReplayAction === "stop"
+      ? finalisationRunning
+        ? "Finalising..."
+        : "Starting finalisation..."
+      : "Stop and build ZIP";
   elements.interruptReplayCaptureButton.textContent =
     pendingReplayAction === "abort" ? "Interrupting..." : "Interrupt replay";
   renderReplayProgress(
@@ -264,9 +273,13 @@ function renderReplayRecorder(status) {
     recomputedActive,
     resultCaptureActive,
     playbackComplete,
+    replayFinished,
     playbackError,
   );
-  if (recomputedActive) {
+  if (finalisationRunning) {
+    elements.replayCaptureInfo.textContent =
+      `Replay complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the recomputed voyage"}.`;
+  } else if (recomputedActive) {
     elements.replayCaptureInfo.textContent =
       `Capturing recomputed replay of ${currentVoyage.recomputedReplay.parentVoyage || "parent voyage"}.`;
   } else if (ready) {
@@ -301,22 +314,49 @@ function renderReplayProgress(
   recomputedActive,
   resultCaptureActive,
   playbackComplete,
+  replayFinished,
   playbackError,
 ) {
   const finalisation = status.finalisation || null;
-  if (finalisation?.state === "running" && finalisation.loggerClosed === true) {
+  if (finalisation?.state === "running") {
     const zip = finalisation.zip || null;
-    elements.replayPlaybackState.textContent =
-      "Complete · Logger recorder closed";
+    if (replayFinished || finalisation.loggerClosed === true) {
+      elements.replayPlaybackState.textContent = finalisation.loggerClosed === true
+        ? "Complete · Logger recorder closed"
+        : "Complete · finalising Logger result";
+    }
     elements.replayFinaliseValue.textContent = zip
       ? `Building ZIP · ${Number(zip.percent || 0).toFixed(1)}% · ${zip.entriesProcessed || 0}/${zip.entriesTotal || 0} files · ${formatBytes(zip.outputBytes || 0)} written`
       : `${titleCase(finalisation.phase || "finalising")} · ${finalisation.message || "Preparing ZIP"}`;
+    renderTaskProgress(elements.replayFinaliseProgressBar, {
+      active: true,
+      percent: zip && Number.isFinite(Number(zip.percent))
+        ? Number(zip.percent)
+        : null,
+      state: "running",
+    });
   } else if (finalisation?.state === "complete") {
     elements.replayFinaliseValue.textContent =
       `Complete${finalisation.bundle?.fileName ? ` · ${finalisation.bundle.fileName}` : ""}`;
+    renderTaskProgress(elements.replayFinaliseProgressBar, {
+      active: true,
+      percent: 100,
+      state: "complete",
+    });
   } else if (finalisation?.state === "failed") {
     elements.replayFinaliseValue.textContent =
       `FAILED · ${finalisation.error || "Voyage ZIP finalisation failed"}`;
+    renderTaskProgress(elements.replayFinaliseProgressBar, {
+      active: true,
+      percent: null,
+      state: "failed",
+    });
+  } else {
+    renderTaskProgress(elements.replayFinaliseProgressBar, {
+      active: false,
+      percent: 0,
+      state: "idle",
+    });
   }
   const coverage = playback.coverage || {};
   const lastReason = playback.lastReason || coverage.lastReason || null;
@@ -341,7 +381,7 @@ function renderReplayProgress(
     null,
   );
 
-  if (!(finalisation?.state === "running" && finalisation.loggerClosed === true)) {
+  if (!(finalisation?.state === "running" && (replayFinished || finalisation.loggerClosed === true))) {
     elements.replayPlaybackState.textContent = !playback.loaded
     ? "Not loaded"
     : playbackError
@@ -363,6 +403,17 @@ function renderReplayProgress(
         ? `No replayable deltas reported · cursor ${cursor}/${totalLines}`
         : "No replayable deltas reported"
       : "-";
+  renderTaskProgress(elements.replayProgressBar, {
+    active: playback.loaded || replayedLines > 0,
+    percent,
+    state: playbackError
+      ? "failed"
+      : replayFinished
+        ? "complete"
+        : playback.active
+          ? "running"
+          : "idle",
+  });
   elements.replaySegmentsValue.textContent =
     segmentsCompleted !== null && segmentsTotal !== null
       ? `${segmentsCompleted} of ${segmentsTotal} complete`
@@ -380,6 +431,20 @@ function renderReplayProgress(
       lastReason,
       playbackError,
     });
+  }
+}
+
+function renderTaskProgress(element, { active, percent, state }) {
+  element.hidden = !active;
+  element.dataset.state = state || "idle";
+  if (!active) {
+    element.value = 0;
+    return;
+  }
+  if (Number.isFinite(percent)) {
+    element.value = Math.min(100, Math.max(0, percent));
+  } else {
+    element.removeAttribute("value");
   }
 }
 

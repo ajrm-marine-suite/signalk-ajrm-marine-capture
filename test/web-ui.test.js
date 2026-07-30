@@ -59,6 +59,13 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(appSource, /Interrupt now to preserve the incomplete evidence ZIP/);
   assert.match(appSource, /Complete · Logger recorder closed/);
   assert.match(appSource, /Building ZIP · \$\{Number\(zip\.percent/);
+  assert.match(htmlSource, /id="replayProgressBar"/);
+  assert.match(htmlSource, /id="replayFinaliseProgressBar"/);
+  assert.match(appSource, /renderTaskProgress\(elements\.replayFinaliseProgressBar/);
+  assert.match(appSource, /element\.removeAttribute\("value"\)/);
+  assert.match(appSource, /Replay complete; finalising/);
+  assert.match(appSource, /Complete · finalising Logger result/);
+  assert.match(appSource, /finalisationRunning \|\| !recomputedActive/);
   assert.match(htmlSource, /ZIP progress is reported here independently/);
   assert.match(htmlSource, /without recompression/);
   assert.match(appSource, /window\.confirm/);

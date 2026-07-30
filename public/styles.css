@@ -158,6 +158,45 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.task-progress {
+  display: block;
+  width: min(100%, 520px);
+  height: 12px;
+  margin-top: 7px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  accent-color: #55a4ff;
+  background: #071827;
+}
+
+.task-progress[hidden] {
+  display: none;
+}
+
+.task-progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #071827;
+}
+
+.task-progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1f6fd0, #62b0ff);
+}
+
+.task-progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1f6fd0, #62b0ff);
+}
+
+.task-progress[data-state="complete"] {
+  accent-color: #35c97b;
+}
+
+.task-progress[data-state="failed"] {
+  accent-color: #df5b70;
+}
+
 .field-note {
   margin: 12px 0 0;
   font-size: 0.9rem;

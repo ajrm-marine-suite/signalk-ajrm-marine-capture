@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.11
+
+- Show separate replay and finalisation progress bars. Long phases without
+  measurable byte progress use an indeterminate activity bar; ZIP writing uses
+  the exact percentage reported by the disk-backed streaming writer.
+- Keep current finalisation status separate from the previous completed bundle,
+  so closing Logger or indexing evidence can no longer appear as a stale
+  completed ZIP.
+- Report an end-of-capture replay as complete while Logger closes its result
+  recorder, and disable replay controls once finalisation has begun.
+- Publish the plugin state as `finalising` throughout the finalisation
+  pipeline.
+
 ## 0.6.10
 
 - Recover the `0.6.8` normal-stop/ZIP-memory-exhaustion failure without

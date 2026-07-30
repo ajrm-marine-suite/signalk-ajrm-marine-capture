@@ -51,9 +51,21 @@
             <p id="replayCaptureInfo">Load a voyage in Logger using Sensor sources only mode.</p>
             <dl class="replay-status" aria-live="polite">
               <div><dt>Logger playback</dt><dd id="replayPlaybackState">Not loaded</dd></div>
-              <div><dt>Progress</dt><dd id="replayProgressValue">-</dd></div>
+              <div>
+                <dt>Replay progress</dt>
+                <dd>
+                  <span id="replayProgressValue">-</span>
+                  <progress id="replayProgressBar" class="task-progress" max="100" value="0" aria-label="Voyage replay progress"></progress>
+                </dd>
+              </div>
               <div><dt>Segments</dt><dd id="replaySegmentsValue">-</dd></div>
-              <div><dt>ZIP finalisation</dt><dd id="replayFinaliseValue">Not ready</dd></div>
+              <div>
+                <dt>Finalisation</dt>
+                <dd>
+                  <span id="replayFinaliseValue">Not ready</span>
+                  <progress id="replayFinaliseProgressBar" class="task-progress" max="100" value="0" aria-label="Voyage finalisation progress"></progress>
+                </dd>
+              </div>
             </dl>
             <div class="actions">
               <button id="startReplayCaptureButton" type="button">Start replay result</button>
