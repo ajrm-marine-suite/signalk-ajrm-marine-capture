@@ -1271,8 +1271,11 @@ module.exports = function ajrmMarineCapture(app) {
     publishState();
   }
 
-  async function writeRecomputedCompletionCheckpoint(voyage, replayResult) {
-    const completedAt = new Date().toISOString();
+  async function writeRecomputedCompletionCheckpoint(
+    voyage,
+    replayResult,
+    { completedAt = new Date().toISOString() } = {},
+  ) {
     const checkpoint = {
       contract: "ajrm-marine-recomputed-completion",
       contractVersion: 1,
@@ -1527,6 +1530,15 @@ module.exports = function ajrmMarineCapture(app) {
       };
     }
     beginFinalisation(voyage);
+    if (
+      completedRecomputation?.source === "legacy-normal-stop-evidence"
+    ) {
+      await writeRecomputedCompletionCheckpoint(
+        voyage,
+        completedRecomputation.result,
+        { completedAt: completedRecomputation.completedAt },
+      );
+    }
     finalisation.loggerClosed = true;
     finalisation.loggerClosedAt =
       completedRecomputation?.completedAt || now;
@@ -1604,6 +1616,7 @@ module.exports = function ajrmMarineCapture(app) {
       checkpoint?.recomputationVerified === true
     ) {
       candidates.push({
+        source: "completion-checkpoint",
         completedAt: checkpoint.completedAt,
         recomputedReplay: checkpoint.recomputedReplay,
         result: checkpoint.replayResult ||
@@ -1618,11 +1631,17 @@ module.exports = function ajrmMarineCapture(app) {
       existingIndex?.recomputedReplay?.verified === true
     ) {
       candidates.push({
+        source: "completed-index",
         completedAt: existingIndex.recomputedReplay.completedAt,
         recomputedReplay: existingIndex.recomputedReplay,
         result: existingIndex.recomputedReplay.result,
       });
     }
+    const legacyCompletion = legacyNormalStopCompletion(
+      voyageId,
+      existingIndex,
+    );
+    if (legacyCompletion) candidates.push(legacyCompletion);
     for (const candidate of candidates) {
       const result = candidate.result;
       try {
@@ -1641,6 +1660,98 @@ module.exports = function ajrmMarineCapture(app) {
       return candidate;
     }
     return null;
+  }
+
+  function legacyNormalStopCompletion(voyageId, existingIndex) {
+    if (
+      existingIndex?.version !== "0.6.8" ||
+      existingIndex?.id !== voyageId ||
+      existingIndex?.incomplete !== true ||
+      existingIndex?.interruptedByRestart !== true ||
+      existingIndex?.captureFileMode !== "portable" ||
+      existingIndex?.recomputedReplay?.kind !== "recomputed-replay"
+    ) {
+      return null;
+    }
+    const events = Array.isArray(existingIndex.events)
+      ? existingIndex.events
+      : [];
+    const normalStop = events
+      .filter(
+        (event) =>
+          event?.type === "stop" &&
+          event?.message === "recomputed replay capture stopped" &&
+          Number.isFinite(Date.parse(event?.at)),
+      )
+      .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))[0];
+    const firstRecoveryAt = events
+      .filter(
+        (event) =>
+          event?.type === "recovered" &&
+          Number.isFinite(Date.parse(event?.at)),
+      )
+      .map((event) => Date.parse(event.at))
+      .sort((left, right) => left - right)[0];
+    if (
+      !normalStop ||
+      !Number.isFinite(firstRecoveryAt) ||
+      Date.parse(normalStop.at) >= firstRecoveryAt
+    ) {
+      return null;
+    }
+    const sourceResult = existingIndex.recomputedReplay.result;
+    const coverage = sourceResult?.coverage;
+    const sourceManifest = sourceResult?.resultSegments;
+    const coverageSegments = Array.isArray(coverage?.segments)
+      ? coverage.segments
+      : [];
+    const resultSegments = Array.isArray(sourceManifest?.segments)
+      ? sourceManifest.segments
+      : [];
+    if (
+      sourceResult?.aborted === true ||
+      sourceManifest?.aborted === true ||
+      sourceManifest?.incomplete === true ||
+      (Array.isArray(sourceManifest?.errors) &&
+        sourceManifest.errors.length > 0) ||
+      coverage?.inputComplete !== true ||
+      coverage?.preparedComplete !== true ||
+      coverage?.lastReason !== "end of capture" ||
+      Number(coverage?.cursor) !== Number(coverage?.totalLines) ||
+      Number(coverage?.replayedLines) !== Number(coverage?.replayableLines) ||
+      Number(coverage?.segmentsCompleted) !== Number(coverage?.segmentsTotal) ||
+      coverageSegments.length === 0 ||
+      coverageSegments.some((segment) => segment?.complete !== true) ||
+      resultSegments.length === 0
+    ) {
+      return null;
+    }
+    const result = {
+      ...sourceResult,
+      incomplete: false,
+      interruptedByRestart: false,
+      interruptionReason: null,
+      coverage: {
+        ...coverage,
+        complete: true,
+        resultSegmentsComplete: true,
+      },
+      resultSegments: {
+        ...sourceManifest,
+        complete: true,
+      },
+    };
+    return {
+      source: "legacy-normal-stop-evidence",
+      completedAt: normalStop.at,
+      recomputedReplay: {
+        ...existingIndex.recomputedReplay,
+        completedAt: normalStop.at,
+        legacyCompletionEvidence: true,
+        result,
+      },
+      result,
+    };
   }
 
   async function takePeriodicSnapshot() {

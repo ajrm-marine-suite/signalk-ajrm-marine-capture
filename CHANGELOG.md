@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.10
+
+- Recover the `0.6.8` normal-stop/ZIP-memory-exhaustion failure without
+  mislabelling the replay incomplete. The one-time legacy migration requires a
+  persisted normal replay-stop event before recovery, complete end-of-capture
+  input coverage, no abort or segment errors, and internally consistent
+  finalised segment totals.
+- Convert accepted legacy evidence into the new durable completion checkpoint
+  before streaming the ZIP, so another restart remains recoverable.
+
 ## 0.6.9
 
 - Replace in-memory `AdmZip` voyage construction with a disk-backed streaming

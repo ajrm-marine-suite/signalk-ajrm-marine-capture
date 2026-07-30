@@ -518,6 +518,190 @@ test("startup recovery preserves verified replay completion when restart occurs 
   }
 });
 
+test("startup recovery salvages a v0.6.8 replay stopped normally before its ZIP exhausted memory", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-legacy-complete-recovery-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  const startedAt = new Date(Date.now() - 3 * 60 * 1000);
+  const stoppedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  const recoveredAt = new Date(Date.now() - 60 * 1000).toISOString();
+  const voyageId = `voyage-${startedAt.toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z")}`;
+  const workingDirectory = path.join(voyageDirectory, voyageId);
+  await fs.mkdir(path.join(workingDirectory, "capture"), { recursive: true });
+  const fileName = `${captureName(startedAt)}.gz`;
+  const capturedAt = startedAt.toISOString();
+  const gzipBytes = zlib.gzipSync(Buffer.from(`${JSON.stringify({
+    capturedAt,
+    originalCapturedAt: "2026-07-17T15:01:08.953Z",
+    replayRole: "calculated-output",
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "signalk-ajrm-marine-navigation-reference",
+        timestamp: capturedAt,
+        values: [{
+          path: "navigation.headingTrue",
+          value: 1.25,
+        }],
+      }],
+    },
+  })}\n`));
+  await fs.writeFile(
+    path.join(workingDirectory, "capture", fileName),
+    gzipBytes,
+  );
+  const resultSegments = {
+    schemaVersion: 1,
+    complete: false,
+    incomplete: false,
+    aborted: false,
+    abortReason: null,
+    segmentsTotal: 1,
+    segmentsFinalized: 1,
+    lines: 1,
+    bytes: gzipBytes.length,
+    errors: [],
+    segments: [{
+      index: 0,
+      fileName,
+      startedAt: capturedAt,
+      from: capturedAt,
+      to: capturedAt,
+      lines: 1,
+      bytes: gzipBytes.length,
+      compressed: true,
+      finalized: true,
+      available: true,
+      error: null,
+    }],
+  };
+  const result = {
+    schemaVersion: 1,
+    kind: "recomputed-replay",
+    incomplete: true,
+    interruptedByRestart: true,
+    aborted: false,
+    coverage: {
+      complete: false,
+      inputComplete: true,
+      preparedComplete: true,
+      resultSegmentsComplete: false,
+      lastReason: "end of capture",
+      startCursor: 0,
+      cursor: 1,
+      totalLines: 1,
+      replayableLines: 1,
+      replayedLines: 1,
+      segmentsTotal: 1,
+      segmentsCompleted: 1,
+      segments: [{
+        index: 0,
+        fileName: "parent.jsonl",
+        replayableLines: 1,
+        replayedLines: 1,
+        complete: true,
+      }],
+    },
+    resultSegments,
+  };
+  await fs.writeFile(
+    path.join(workingDirectory, "index.json"),
+    `${JSON.stringify({
+      version: "0.6.8",
+      id: voyageId,
+      startedAt: startedAt.toISOString(),
+      stoppedAt: recoveredAt,
+      startReason: "recomputed replay",
+      stopReason:
+        "Signal K restarted before AJRM Marine Capture stopped this voyage",
+      captureMode: "minimal",
+      captureFileMode: "portable",
+      incomplete: true,
+      interruptedByRestart: true,
+      recomputationVerified: false,
+      recomputedReplay: {
+        schemaVersion: 1,
+        kind: "recomputed-replay",
+        parentVoyage: "voyage-parent.zip",
+        playbackMode: "sensor-only",
+        rate: 1,
+        complete: false,
+        incomplete: true,
+        verified: false,
+        result,
+      },
+      captureFiles: [fileName],
+      captureReferences: [],
+      observations: {
+        schemaVersion: 1,
+        fileName: "observations/observations.jsonl",
+        count: 0,
+      },
+      events: [{
+        at: recoveredAt,
+        type: "recovered",
+        message: "Voyage closed at startup after Signal K restart",
+      }, {
+        at: stoppedAt,
+        type: "stop",
+        message: "recomputed replay capture stopped",
+      }],
+    }, null, 2)}\n`,
+  );
+
+  const app = fakeApp({
+    async status() {
+      return { ok: true, playback: { loaded: false }, captures: [] };
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+  });
+  const plugin = createPlugin(app);
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: false,
+  });
+
+  try {
+    const zipPath = path.join(voyageDirectory, `${voyageId}.zip`);
+    await waitForFile(zipPath);
+    const status = await waitForStatus(
+      () => app.ajrmMarineCaptureApi.status(),
+      (candidate) => candidate.finalisation?.state === "complete",
+    );
+    const zip = new AdmZip(zipPath);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.incomplete, false);
+    assert.equal(index.recomputationVerified, true);
+    assert.equal(index.recomputedReplay.complete, true);
+    assert.equal(index.recomputedReplay.verified, true);
+    assert.equal(index.recomputedReplay.legacyCompletionEvidence, true);
+    assert.equal(index.recomputedReplay.result.coverage.complete, true);
+    assert.equal(
+      index.recomputedReplay.result.coverage.resultSegmentsComplete,
+      true,
+    );
+    assert.equal(index.recomputedReplay.result.resultSegments.complete, true);
+    assert.ok(zip.getEntry("system/recomputed-replay-completion.json"));
+    assert.equal(status.zipProgress.percent, 100);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 function captureName(date) {
   return `capture-${date.toISOString().replace(/[:.]/g, "-")}.jsonl`;
 }
