@@ -57,6 +57,10 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(appSource, /playback\.lastError/);
   assert.match(appSource, /cursor \$\{cursor\}\/\$\{totalLines\}/);
   assert.match(appSource, /Interrupt now to preserve the incomplete evidence ZIP/);
+  assert.match(appSource, /Complete · Logger recorder closed/);
+  assert.match(appSource, /Building ZIP · \$\{Number\(zip\.percent/);
+  assert.match(htmlSource, /ZIP progress is reported here independently/);
+  assert.match(htmlSource, /without recompression/);
   assert.match(appSource, /window\.confirm/);
 });
 

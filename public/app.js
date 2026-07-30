@@ -303,6 +303,21 @@ function renderReplayProgress(
   playbackComplete,
   playbackError,
 ) {
+  const finalisation = status.finalisation || null;
+  if (finalisation?.state === "running" && finalisation.loggerClosed === true) {
+    const zip = finalisation.zip || null;
+    elements.replayPlaybackState.textContent =
+      "Complete · Logger recorder closed";
+    elements.replayFinaliseValue.textContent = zip
+      ? `Building ZIP · ${Number(zip.percent || 0).toFixed(1)}% · ${zip.entriesProcessed || 0}/${zip.entriesTotal || 0} files · ${formatBytes(zip.outputBytes || 0)} written`
+      : `${titleCase(finalisation.phase || "finalising")} · ${finalisation.message || "Preparing ZIP"}`;
+  } else if (finalisation?.state === "complete") {
+    elements.replayFinaliseValue.textContent =
+      `Complete${finalisation.bundle?.fileName ? ` · ${finalisation.bundle.fileName}` : ""}`;
+  } else if (finalisation?.state === "failed") {
+    elements.replayFinaliseValue.textContent =
+      `FAILED · ${finalisation.error || "Voyage ZIP finalisation failed"}`;
+  }
   const coverage = playback.coverage || {};
   const lastReason = playback.lastReason || coverage.lastReason || null;
   const replayedLines = finiteNumber(
@@ -326,7 +341,8 @@ function renderReplayProgress(
     null,
   );
 
-  elements.replayPlaybackState.textContent = !playback.loaded
+  if (!(finalisation?.state === "running" && finalisation.loggerClosed === true)) {
+    elements.replayPlaybackState.textContent = !playback.loaded
     ? "Not loaded"
     : playbackError
       ? `FAILED${lastReason ? ` · ${lastReason}` : ""}`
@@ -339,6 +355,7 @@ function renderReplayProgress(
           : resultCaptureActive && lastReason === "loaded"
             ? "Armed · playback has not started"
             : `Stalled / incomplete${lastReason ? ` · ${lastReason}` : ""}`;
+  }
   elements.replayProgressValue.textContent = replayableLines > 0
     ? `${replayedLines} of ${replayableLines} replay deltas${percent === null ? "" : ` · ${percent.toFixed(1)}%`}${cursor !== null && totalLines !== null ? ` · cursor ${cursor}/${totalLines}` : ""}`
     : playback.loaded
@@ -352,16 +369,18 @@ function renderReplayProgress(
       : playback.loaded
         ? "Not reported"
         : "-";
-  elements.replayFinaliseValue.textContent = replayFinaliseReason({
-    loggerStatus: status.ajrmMarineLogger || {},
-    playback,
-    coverage,
-    recomputedActive,
-    resultCaptureActive,
-    playbackComplete,
-    lastReason,
-    playbackError,
-  });
+  if (!finalisation || !["running", "complete", "failed"].includes(finalisation.state)) {
+    elements.replayFinaliseValue.textContent = replayFinaliseReason({
+      loggerStatus: status.ajrmMarineLogger || {},
+      playback,
+      coverage,
+      recomputedActive,
+      resultCaptureActive,
+      playbackComplete,
+      lastReason,
+      playbackError,
+    });
+  }
 }
 
 function replayFinaliseReason({

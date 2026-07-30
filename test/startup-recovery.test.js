@@ -7,6 +7,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const zlib = require("node:zlib");
 const AdmZip = require("adm-zip");
 const createPlugin = require("../plugin");
 
@@ -336,6 +337,187 @@ test("startup recovery preserves only bounded partial recomputed segments and ma
   }
 });
 
+test("startup recovery preserves verified replay completion when restart occurs during later ZIP work", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "ajrm-capture-complete-recovery-"),
+  );
+  const voyageDirectory = path.join(root, "voyages");
+  const loggerDirectory = path.join(root, "logger");
+  const capturesDirectory = path.join(loggerDirectory, "captures");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  await fs.mkdir(capturesDirectory, { recursive: true });
+  const startedAt = new Date(Date.now() - 2 * 60 * 1000);
+  const completedAt = new Date(Date.now() - 30 * 1000).toISOString();
+  const voyageId = `voyage-${startedAt.toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z")}`;
+  const workingDirectory = path.join(voyageDirectory, voyageId);
+  await fs.mkdir(path.join(workingDirectory, "capture"), { recursive: true });
+  await fs.mkdir(path.join(workingDirectory, "system"), { recursive: true });
+  const fileName = `${captureName(startedAt)}.gz`;
+  const capturedAt = startedAt.toISOString();
+  const gzipBytes = zlib.gzipSync(Buffer.from(`${JSON.stringify({
+    capturedAt,
+    originalCapturedAt: "2026-07-16T09:04:12.000Z",
+    replayRole: "sensor-input",
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "YDEN.2",
+        timestamp: capturedAt,
+        values: [{
+          path: "navigation.position",
+          value: { latitude: 55.8, longitude: -5.7 },
+        }],
+      }],
+    },
+  })}\n`));
+  await fs.writeFile(
+    path.join(workingDirectory, "capture", fileName),
+    gzipBytes,
+  );
+  const result = {
+    schemaVersion: 1,
+    kind: "recomputed-replay",
+    parentVoyage: "voyage-parent.zip",
+    playbackMode: "sensor-only",
+    rate: 1,
+    coverage: {
+      complete: true,
+      preparedComplete: true,
+      lastReason: "end of capture",
+      resultSegmentsComplete: true,
+    },
+    resultSegments: {
+      complete: true,
+      segmentsTotal: 1,
+      segmentsFinalized: 1,
+      lines: 1,
+      bytes: gzipBytes.length,
+      segments: [{
+        index: 0,
+        fileName,
+        startedAt: capturedAt,
+        from: capturedAt,
+        to: capturedAt,
+        lines: 1,
+        bytes: gzipBytes.length,
+        compressed: true,
+        finalized: true,
+        available: true,
+        error: null,
+      }],
+    },
+  };
+  const recomputedReplay = {
+    schemaVersion: 1,
+    kind: "recomputed-replay",
+    parentVoyage: "voyage-parent.zip",
+    playbackMode: "sensor-only",
+    rate: 1,
+    complete: true,
+    incomplete: false,
+    verified: true,
+    completedAt,
+    result,
+  };
+  await fs.writeFile(
+    path.join(workingDirectory, "index.json"),
+    `${JSON.stringify({
+      id: voyageId,
+      startedAt: startedAt.toISOString(),
+      startReason: "recomputed replay",
+      captureMode: "minimal",
+      captureFileMode: "portable",
+      comment: "Completed before packaging restart",
+      recomputedReplay: {
+        schemaVersion: 1,
+        kind: "recomputed-replay",
+        parentVoyage: "voyage-parent.zip",
+        playbackMode: "sensor-only",
+        rate: 1,
+      },
+      captureReferences: [],
+      observations: {
+        schemaVersion: 1,
+        fileName: "observations/observations.jsonl",
+        count: 0,
+      },
+      events: [],
+    }, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(
+      workingDirectory,
+      "system",
+      "recomputed-replay-completion.json",
+    ),
+    `${JSON.stringify({
+      contract: "ajrm-marine-recomputed-completion",
+      contractVersion: 1,
+      voyageId,
+      completedAt,
+      verified: true,
+      recomputationVerified: true,
+      recomputedReplay,
+      replayResult: result,
+    }, null, 2)}\n`,
+  );
+
+  const app = fakeApp({
+    async status() {
+      return { ok: true, playback: { loaded: false }, captures: [] };
+    },
+    paths() {
+      return { captures: capturesDirectory };
+    },
+  });
+  const plugin = createPlugin(app);
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    ajrmMarineLoggerLogDirectory: loggerDirectory,
+    captureMode: "minimal",
+    captureFileMode: "reference",
+    deleteWorkingDirectoryAfterZip: true,
+  });
+
+  try {
+    const zipPath = path.join(voyageDirectory, `${voyageId}.zip`);
+    await waitForFile(zipPath);
+    const zip = new AdmZip(zipPath);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.interruptedByRestart, true);
+    assert.equal(index.incomplete, false);
+    assert.equal(index.recomputationVerified, true);
+    assert.equal(index.recomputedReplay.complete, true);
+    assert.equal(index.recomputedReplay.incomplete, false);
+    assert.equal(index.recomputedReplay.verified, true);
+    assert.equal(
+      index.recomputedReplay.packagingRecoveredAfterRestart,
+      true,
+    );
+    assert.equal(index.recomputedReplay.result.coverage.complete, true);
+    assert.ok(zip.getEntry(`capture/${fileName}`));
+    assert.equal(zip.getEntry(`capture/${fileName}`).header.method, 0);
+    const recoveryStatus = JSON.parse(
+      zip.readAsText("system/recovery-status.json"),
+    );
+    assert.equal(recoveryStatus.incomplete, false);
+    assert.equal(recoveryStatus.recomputationVerified, true);
+    const status = await waitForStatus(
+      () => app.ajrmMarineCaptureApi.status(),
+      (candidate) => candidate.finalisation?.state === "complete",
+    );
+    assert.equal(status.finalisation.state, "complete");
+    assert.equal(status.zipProgress.state, "complete");
+    assert.equal(status.zipProgress.percent, 100);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 function captureName(date) {
   return `capture-${date.toISOString().replace(/[:.]/g, "-")}.jsonl`;
 }
@@ -348,6 +530,16 @@ async function waitForFile(filePath) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+async function waitForStatus(readStatus, predicate) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const status = await readStatus();
+    if (predicate(status)) return status;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for Capture status");
 }
 
 function fakeApp(loggerApi) {

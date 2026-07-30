@@ -230,8 +230,10 @@ test("recomputed replay start and stop builds a portable child voyage with audit
   let replayCaptureStarted = false;
   let replayPlaybackStarted = false;
   let replayCaptureStopShouldFail = false;
+  let loggerStatusCalls = 0;
   const app = fakeApp({
     async status() {
+      loggerStatusCalls += 1;
       return loggerStatus;
     },
     paths() {
@@ -383,7 +385,37 @@ test("recomputed replay start and stop builds a portable child voyage with audit
       captureContents.get(captureFileNames[0]),
     );
 
-    const stopped = await invoke(routes, "POST", "/voyage/replay/stop", {});
+    let releaseZipBuild;
+    let signalZipBuildEntered;
+    const zipBuildEntered = new Promise((resolve) => {
+      signalZipBuildEntered = resolve;
+    });
+    const zipBuildGate = new Promise((resolve) => {
+      releaseZipBuild = resolve;
+    });
+    app.ajrmMarineCaptureTestHooks = {
+      async beforeZipBuild() {
+        signalZipBuildEntered();
+        await zipBuildGate;
+      },
+    };
+
+    const stopRequest = invoke(routes, "POST", "/voyage/replay/stop", {});
+    await zipBuildEntered;
+    const loggerStatusCallsAfterClose = loggerStatusCalls;
+    const statusDuringZip = await captureApi.status();
+    assert.equal(loggerStatusCalls, loggerStatusCallsAfterClose);
+    assert.equal(statusDuringZip.state, "finalising");
+    assert.equal(statusDuringZip.finalisation.state, "running");
+    assert.equal(statusDuringZip.finalisation.phase, "building-zip");
+    assert.equal(statusDuringZip.finalisation.loggerClosed, true);
+    assert.equal(statusDuringZip.ajrmMarineLogger.recorderClosed, true);
+    assert.equal(
+      statusDuringZip.ajrmMarineLogger.statusSource,
+      "capture-finalisation-checkpoint",
+    );
+    releaseZipBuild();
+    const stopped = await stopRequest;
     assert.equal(stopped.statusCode, 200);
     assert.equal(stopped.body.bundle.format, "zip");
     const zip = new AdmZip(stopped.body.bundle.path);

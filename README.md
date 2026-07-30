@@ -5,6 +5,16 @@
 AJRM Marine Capture is a Signal K voyage recorder and diagnostic bundle orchestrator
 for AJRM Marine suite testing and real sailing review.
 
+Version `0.6.9` builds voyage ZIPs as disk-backed streams. Existing compressed
+Logger `.jsonl.gz` segments are stored directly in the ZIP without a second
+compression pass, avoiding a whole-voyage memory copy and unnecessary Pi CPU
+work. Once Logger has closed a recomputed recording, Capture writes a durable
+completion checkpoint and reports ZIP phase, file, byte, and percentage
+progress independently of Logger. If Signal K restarts during that later
+packaging phase, recovery verifies the checkpoint and completed segment
+manifest, resumes ZIP creation, and preserves the voyage as complete and
+verified.
+
 Version `0.6.8` builds temporary portable voyage downloads in a private,
 disk-backed folder beside the voyage store instead of the Pi's RAM-backed
 `/tmp`. Completed transfers, interrupted browser transfers, and failed builds
@@ -97,7 +107,9 @@ Logger replays only sensor-origin updates from a parent voyage:
    three-second quiet-period calculation flush, extended by each late output
    and bounded to fifteen seconds, before the ZIP is finalised. Logger then
    declares every rotated result file in `resultSegments`; Capture verifies and
-   copies every declared file by exact name and byte size.
+   copies every declared file by exact name and byte size. Logger then closes;
+   Capture's own finalisation status continues to show ZIP percentage, files,
+   input bytes, output bytes, and the current entry until packaging completes.
 
 The result contains the replayed sensor inputs and newly recalculated live
 outputs. Its `index.json` includes `recomputedReplay` metadata with the parent
@@ -122,6 +134,13 @@ those segments in a ZIP explicitly marked `incomplete`, `verified: false`, and
 Signal K restarts during a recomputed replay, startup recovery similarly copies
 only exact known or strictly wall-time-bounded partial Logger segments and
 marks the recovered ZIP interrupted, incomplete, and unverified.
+
+A restart after Logger has already completed normally is handled differently.
+Capture records that verified completion before beginning the potentially long
+ZIP build. Startup recovery revalidates the completion checkpoint and copied
+segment manifest, resumes packaging from disk, and does not relabel the voyage
+as interrupted or incomplete merely because Signal K restarted during ZIP
+creation or a later download build.
 
 Portable download preparation is idempotent: if a voyage ZIP already contains
 every declared `captureFiles` entry, Capture serves that ZIP unchanged and does

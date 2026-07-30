@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.9
+
+- Replace in-memory `AdmZip` voyage construction with a disk-backed streaming
+  ZIP writer so large bundles are never read into RAM as a whole.
+- Store existing Logger `.jsonl.gz` capture segments without recompressing
+  them, reducing ZIP finalisation CPU load and temporary memory pressure.
+- Publish Capture-owned ZIP phase, entry, byte, and percentage progress after
+  Logger's replay-result recorder has closed, without polling that closed
+  recorder.
+- Persist and strictly revalidate a durable completed-replay checkpoint before
+  packaging. Startup recovery now resumes later ZIP work without falsely
+  marking a normally completed replay incomplete or unverified.
+- Reuse already copied, exact-size result segments during recovery instead of
+  requiring their original Logger source files to remain available.
+
+## 0.6.8
+
+- Build temporary portable-download workspaces on persistent disk rather than
+  the Pi's RAM-backed `/tmp`, and clean completed, failed, interrupted, and
+  crash-left workspaces.
+
 ## 0.6.7
 
 - Run the test suite with a Node 20-compatible file glob so the advisory

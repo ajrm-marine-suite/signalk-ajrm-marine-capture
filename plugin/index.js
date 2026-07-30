@@ -8,6 +8,7 @@ const readline = require("node:readline");
 const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
 const AdmZip = require("adm-zip");
+const { ZipArchive } = require("archiver");
 const yauzl = require("yauzl");
 const packageInfo = require("../package.json");
 
@@ -32,6 +33,8 @@ const OBSERVATIONS_RELATIVE_PATH = "observations/observations.jsonl";
 const OBSERVATION_EVIDENCE_DIRECTORY = "observations/evidence";
 const PARENT_OBSERVATIONS_RELATIVE_PATH =
   "observations/parent-observations.jsonl";
+const RECOMPUTED_COMPLETION_RELATIVE_PATH =
+  "system/recomputed-replay-completion.json";
 const MAX_OBSERVATION_TEXT_CHARACTERS = 2000;
 const MAX_OBSERVATIONS_PER_VOYAGE = 1000;
 const MAX_OBSERVATIONS_RETURNED = 200;
@@ -98,6 +101,9 @@ module.exports = function ajrmMarineCapture(app) {
   let observationWriteQueue = Promise.resolve();
   let startupRecoveryPromise = Promise.resolve();
   let startVoyagePromise = null;
+  let finalisation = null;
+  let cachedLoggerStatus = null;
+  let lastZipProgressPublishMs = 0;
   const recentEvents = [];
 
   plugin.id = "signalk-ajrm-marine-capture";
@@ -1068,11 +1074,15 @@ module.exports = function ajrmMarineCapture(app) {
     if (stoppingVoyage) return lastBundle;
     stoppingVoyage = true;
     const voyage = currentVoyage;
+    beginFinalisation(voyage);
     try {
       await observationWriteQueue;
       addVoyageEvent("stop", reason);
       addEvent("voyage-stopping", `${voyage.id}: ${reason}`);
       if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
+      updateFinalisation("closing-logger", {
+        message: "Closing AJRM Marine Logger recorder",
+      });
       const captureStop = voyage.captureStop?.ok
         ? voyage.captureStop
         : await callAjrmMarineLogger(
@@ -1091,6 +1101,8 @@ module.exports = function ajrmMarineCapture(app) {
           "AJRM Marine Logger did not close the voyage capture",
         );
       }
+      finalisation.loggerClosed = true;
+      finalisation.loggerClosedAt = new Date().toISOString();
       if (voyage.recomputedReplay) {
         const replayResult = captureStop?.recording?.replayResult || null;
         const resultSegments = validateRecomputedResultSegmentManifest(
@@ -1125,10 +1137,14 @@ module.exports = function ajrmMarineCapture(app) {
         voyage.incomplete = false;
         voyage.recomputationVerified = true;
         voyage.aborted = false;
+        await writeRecomputedCompletionCheckpoint(voyage, replayResult);
       }
       const stoppedAt = new Date().toISOString();
       voyage.stoppedAt = stoppedAt;
       voyage.stopReason = reason;
+      updateFinalisation("collecting-evidence", {
+        message: "Copying completed capture segments and voyage evidence",
+      });
       await closeDrTrack(voyage, stoppedAt);
       await copyDrPlotFixes(voyage);
       await copyConsoleBiteReports(voyage);
@@ -1141,7 +1157,21 @@ module.exports = function ajrmMarineCapture(app) {
           "No recomputed AJRM Marine Logger capture was copied; portable ZIP creation stopped",
         );
       }
+      updateFinalisation("indexing", {
+        message: "Building voyage indexes",
+      });
       const index = await writeVoyageIndex(voyage);
+      updateFinalisation("building-zip", {
+        message: "Building disk-backed voyage ZIP",
+      });
+      if (
+        typeof app.ajrmMarineCaptureTestHooks?.beforeZipBuild ===
+        "function"
+      ) {
+        await app.ajrmMarineCaptureTestHooks.beforeZipBuild({
+          voyageId: voyage.id,
+        });
+      }
       const bundle = await bundleVoyage(voyage, index);
       if (voyage.recomputedReplay && bundle?.format !== "zip") {
         throw new Error(
@@ -1154,6 +1184,7 @@ module.exports = function ajrmMarineCapture(app) {
       }
       currentVoyage = null;
       lastBundle = bundle;
+      finishFinalisation(bundle);
       publishNotification({
         voyageId: voyage.id,
         leaf: "stop",
@@ -1163,9 +1194,107 @@ module.exports = function ajrmMarineCapture(app) {
       addEvent("voyage-stopped", `${voyage.id}: ${reason}`);
       publishState();
       return bundle;
+    } catch (error) {
+      failFinalisation(error);
+      throw error;
     } finally {
       stoppingVoyage = false;
     }
+  }
+
+  function beginFinalisation(voyage) {
+    const now = new Date().toISOString();
+    finalisation = {
+      contract: "ajrm-marine-capture-finalisation",
+      contractVersion: 1,
+      voyageId: voyage.id,
+      recomputedReplay: Boolean(voyage.recomputedReplay),
+      state: "running",
+      phase: "preparing",
+      message: "Preparing voyage finalisation",
+      startedAt: now,
+      updatedAt: now,
+      completedAt: null,
+      loggerClosed: false,
+      loggerClosedAt: null,
+      recomputationVerified: false,
+      zip: null,
+      bundle: null,
+      error: null,
+    };
+    publishState();
+  }
+
+  function updateFinalisation(phase, changes = {}) {
+    if (!finalisation) return;
+    finalisation = {
+      ...finalisation,
+      ...changes,
+      phase,
+      updatedAt: new Date().toISOString(),
+    };
+    publishState();
+  }
+
+  function finishFinalisation(bundle) {
+    if (!finalisation) return;
+    const now = new Date().toISOString();
+    finalisation = {
+      ...finalisation,
+      state: "complete",
+      phase: "complete",
+      message: "Voyage ZIP complete",
+      updatedAt: now,
+      completedAt: now,
+      bundle: bundle
+        ? {
+            fileName: bundle.fileName,
+            bytes: bundle.bytes,
+            format: bundle.format,
+          }
+        : null,
+      error: null,
+    };
+    publishState();
+  }
+
+  function failFinalisation(error) {
+    if (!finalisation) return;
+    finalisation = {
+      ...finalisation,
+      state: "failed",
+      phase: "failed",
+      message: "Voyage finalisation failed",
+      updatedAt: new Date().toISOString(),
+      error: boundedErrorMessage(error),
+    };
+    publishState();
+  }
+
+  async function writeRecomputedCompletionCheckpoint(voyage, replayResult) {
+    const completedAt = new Date().toISOString();
+    const checkpoint = {
+      contract: "ajrm-marine-recomputed-completion",
+      contractVersion: 1,
+      voyageId: voyage.id,
+      completedAt,
+      verified: true,
+      recomputationVerified: true,
+      recomputedReplay: {
+        ...voyage.recomputedReplay,
+        result: replayResult,
+      },
+      replayResult,
+    };
+    await writeJson(
+      path.join(voyage.directory, RECOMPUTED_COMPLETION_RELATIVE_PATH),
+      checkpoint,
+    );
+    finalisation.recomputationVerified = true;
+    finalisation.checkpoint = RECOMPUTED_COMPLETION_RELATIVE_PATH;
+    updateFinalisation("logger-closed", {
+      message: "Logger closed; recomputation completion checkpoint saved",
+    });
   }
 
   async function abortRecomputedReplayVoyage(reason) {
@@ -1307,6 +1436,14 @@ module.exports = function ajrmMarineCapture(app) {
       { recursive: true },
     );
     const existingIndex = await readJson(path.join(directory, "index.json"));
+    const completionCheckpoint = await readJson(
+      path.join(directory, RECOMPUTED_COMPLETION_RELATIVE_PATH),
+    );
+    const completedRecomputation = verifiedRecomputedCompletion(
+      id,
+      completionCheckpoint,
+      existingIndex,
+    );
     const voyage = {
       id,
       directory,
@@ -1324,12 +1461,21 @@ module.exports = function ajrmMarineCapture(app) {
         : "reference",
       recomputedReplay: existingIndex?.recomputedReplay || null,
       ajrmMarineLogger: existingIndex?.ajrmMarineLogger?.start || null,
-      captureStop: {
-        ok: false,
-        interruptedByRestart: true,
-        error: "Signal K restarted before voyage recording was stopped.",
-        recoveredAt: now,
-      },
+      captureStop: completedRecomputation
+        ? {
+            ok: true,
+            recoveredFromCompletionCheckpoint: true,
+            recoveredAt: now,
+            recording: {
+              replayResult: completedRecomputation.result,
+            },
+          }
+        : {
+            ok: false,
+            interruptedByRestart: true,
+            error: "Signal K restarted before voyage recording was stopped.",
+            recoveredAt: now,
+          },
       captureFiles: await listCaptureFileNames(path.join(directory, "capture")),
       captureReferences: Array.isArray(existingIndex?.captureReferences) && existingIndex.captureReferences.length
         ? existingIndex.captureReferences
@@ -1342,7 +1488,23 @@ module.exports = function ajrmMarineCapture(app) {
       recoveredAt: now,
       interruptedByRestart: true,
     };
-    if (voyage.recomputedReplay) {
+    if (completedRecomputation) {
+      voyage.stopReason =
+        "Signal K restarted after Logger completed; portable ZIP finalisation recovered";
+      voyage.incomplete = false;
+      voyage.recomputationVerified = true;
+      voyage.recomputedReplay = {
+        ...voyage.recomputedReplay,
+        ...completedRecomputation.recomputedReplay,
+        status: "complete",
+        complete: true,
+        incomplete: false,
+        verified: true,
+        packagingRecoveredAfterRestart: true,
+        recoveredAt: now,
+        result: completedRecomputation.result,
+      };
+    } else if (voyage.recomputedReplay) {
       voyage.incomplete = true;
       voyage.recomputationVerified = false;
       voyage.recomputedReplay = {
@@ -1364,8 +1526,18 @@ module.exports = function ajrmMarineCapture(app) {
         ),
       };
     }
+    beginFinalisation(voyage);
+    finalisation.loggerClosed = true;
+    finalisation.loggerClosedAt =
+      completedRecomputation?.completedAt || now;
+    finalisation.recomputationVerified = Boolean(completedRecomputation);
+    updateFinalisation("recovery", {
+      message: completedRecomputation
+        ? "Recovering completed recomputation ZIP finalisation"
+        : "Packaging interrupted voyage evidence",
+    });
     appendVoyageEvent(voyage, "recovered", "Voyage closed at startup after Signal K restart");
-    if (voyage.recomputedReplay) {
+    if (voyage.recomputedReplay && !completedRecomputation) {
       await copyIncompleteRecomputedCaptureFiles(voyage, voyage.captureStop);
     } else {
       await copyCaptureFiles(voyage, voyage.captureStop);
@@ -1385,20 +1557,90 @@ module.exports = function ajrmMarineCapture(app) {
       reason: voyage.stopReason,
       incomplete: voyage.incomplete === true,
       recomputationVerified:
-        voyage.recomputedReplay ? false : null,
+        voyage.recomputedReplay
+          ? voyage.recomputationVerified === true
+          : null,
       captureFiles: voyage.captureFiles,
-      note: "This voyage was not resumed because Signal K was stopped or restarted before normal voyage shutdown.",
+      note: completedRecomputation
+        ? "Logger had already completed and verified the recomputed replay. Capture resumed only the later evidence and ZIP finalisation work."
+        : "This voyage was not resumed because Signal K was stopped or restarted before normal voyage shutdown.",
     });
     const index = await writeVoyageIndex(voyage);
+    updateFinalisation("building-zip", {
+      message: "Building disk-backed voyage ZIP after restart",
+    });
     const bundle = await bundleVoyage(voyage, index);
     if (bundle?.format === "zip" && options.deleteWorkingDirectoryAfterZip) {
       await fs.promises.rm(directory, { recursive: true, force: true });
       bundle.workingDirectoryDeleted = true;
     }
-    addEvent("voyage-recovered", `${id}: closed incomplete voyage after startup`);
-    logInfo(`${id} closed as incomplete voyage after startup`);
+    finishFinalisation(bundle);
+    addEvent(
+      "voyage-recovered",
+      completedRecomputation
+        ? `${id}: completed ZIP finalisation recovered after startup`
+        : `${id}: closed incomplete voyage after startup`,
+    );
+    logInfo(
+      completedRecomputation
+        ? `${id} completed ZIP finalisation recovered after startup`
+        : `${id} closed as incomplete voyage after startup`,
+    );
     publishState();
     return bundle;
+  }
+
+  function verifiedRecomputedCompletion(
+    voyageId,
+    checkpoint,
+    existingIndex,
+  ) {
+    const candidates = [];
+    if (
+      checkpoint?.contract === "ajrm-marine-recomputed-completion" &&
+      checkpoint?.contractVersion === 1 &&
+      checkpoint?.voyageId === voyageId &&
+      checkpoint?.verified === true &&
+      checkpoint?.recomputationVerified === true
+    ) {
+      candidates.push({
+        completedAt: checkpoint.completedAt,
+        recomputedReplay: checkpoint.recomputedReplay,
+        result: checkpoint.replayResult ||
+          checkpoint.recomputedReplay?.result,
+      });
+    }
+    if (
+      existingIndex?.id === voyageId &&
+      existingIndex?.incomplete !== true &&
+      existingIndex?.recomputationVerified === true &&
+      existingIndex?.recomputedReplay?.complete === true &&
+      existingIndex?.recomputedReplay?.verified === true
+    ) {
+      candidates.push({
+        completedAt: existingIndex.recomputedReplay.completedAt,
+        recomputedReplay: existingIndex.recomputedReplay,
+        result: existingIndex.recomputedReplay.result,
+      });
+    }
+    for (const candidate of candidates) {
+      const result = candidate.result;
+      try {
+        validateRecomputedResultSegmentManifest(result?.resultSegments);
+      } catch {
+        continue;
+      }
+      if (
+        result?.coverage?.complete !== true ||
+        result?.coverage?.preparedComplete !== true ||
+        result?.coverage?.lastReason !== "end of capture" ||
+        result?.coverage?.resultSegmentsComplete !== true
+      ) {
+        continue;
+      }
+      return candidate;
+    }
+    return null;
   }
 
   async function takePeriodicSnapshot() {
@@ -2166,9 +2408,21 @@ module.exports = function ajrmMarineCapture(app) {
     segment,
     voyageDirectory,
   ) {
+    const target = path.join(
+      voyageDirectory,
+      "capture",
+      segment.fileName,
+    );
+    const expectedBytes = Number(segment.bytes || 0);
+    const existingTarget = await fs.promises.stat(target).catch(() => null);
+    if (
+      existingTarget?.isFile() &&
+      existingTarget.size === expectedBytes
+    ) {
+      return segment.fileName;
+    }
     const source = path.join(capturesDir, segment.fileName);
     const sourceInfo = await fs.promises.stat(source).catch(() => null);
-    const expectedBytes = Number(segment.bytes || 0);
     if (
       !sourceInfo?.isFile() ||
       sourceInfo.size <= 0 ||
@@ -2178,7 +2432,6 @@ module.exports = function ajrmMarineCapture(app) {
         `Declared recomputed result segment is missing or changed: ${segment.fileName}`,
       );
     }
-    const target = path.join(voyageDirectory, "capture", segment.fileName);
     await fs.promises.copyFile(source, target);
     const targetInfo = await fs.promises.stat(target).catch(() => null);
     if (!targetInfo?.isFile() || targetInfo.size !== expectedBytes) {
@@ -2579,7 +2832,21 @@ module.exports = function ajrmMarineCapture(app) {
     const zipName = `${voyage.id}.zip`;
     const zipPath = path.join(options.voyageDirectory, zipName);
     try {
-      await writeDirectoryZip(zipPath, voyage.directory);
+      await writeDirectoryZip(zipPath, voyage.directory, {
+        onProgress(progress) {
+          if (!finalisation || finalisation.voyageId !== voyage.id) return;
+          finalisation.zip = progress;
+          finalisation.updatedAt = new Date().toISOString();
+          const now = Date.now();
+          if (
+            progress.state === "complete" ||
+            now - lastZipProgressPublishMs >= 250
+          ) {
+            lastZipProgressPublishMs = now;
+            publishState();
+          }
+        },
+      });
       return {
         fileName: zipName,
         path: zipPath,
@@ -2668,12 +2935,28 @@ module.exports = function ajrmMarineCapture(app) {
   async function buildStatus() {
     refreshNavigationContextFromSelfPath();
     const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
-    const ajrmMarineLogger = ajrmMarineLoggerApi?.status
-      ? await ajrmMarineLoggerApi.status().catch((error) => ({ ok: false, error: error.message }))
-      : await httpJson(
-          "GET",
-          `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger/status`,
-        ).catch((error) => ({ ok: false, error: error.message }));
+    const loggerAlreadyClosed =
+      finalisation?.state === "running" &&
+      finalisation?.loggerClosed === true;
+    const ajrmMarineLogger = loggerAlreadyClosed
+      ? {
+          ...(cachedLoggerStatus || {}),
+          ok: true,
+          recorderClosed: true,
+          statusSource: "capture-finalisation-checkpoint",
+        }
+      : ajrmMarineLoggerApi?.status
+        ? await ajrmMarineLoggerApi.status().catch((error) => ({
+            ok: false,
+            error: error.message,
+          }))
+        : await httpJson(
+            "GET",
+            `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger/status`,
+          ).catch((error) => ({ ok: false, error: error.message }));
+    if (!loggerAlreadyClosed && ajrmMarineLogger?.ok !== false) {
+      cachedLoggerStatus = ajrmMarineLogger;
+    }
     if (ajrmMarineLogger?.playback && typeof ajrmMarineLogger.playback === "object") {
       loggerPlayback = ajrmMarineLogger.playback;
     }
@@ -2683,7 +2966,14 @@ module.exports = function ajrmMarineCapture(app) {
       version: packageInfo.version,
       timestamp: new Date().toISOString(),
       enabled: options.enabled,
-      state: currentVoyage ? "recording" : options.enabled ? "watching" : "disabled",
+      state:
+        finalisation?.state === "running"
+          ? "finalising"
+          : currentVoyage
+            ? "recording"
+            : options.enabled
+              ? "watching"
+              : "disabled",
       speedKnots,
       sogKnots,
       stwKnots,
@@ -2716,6 +3006,8 @@ module.exports = function ajrmMarineCapture(app) {
             harbourName: navigationContext.nearestHarbourName,
           }),
       lastBundle,
+      finalisation,
+      zipProgress: finalisation?.zip || null,
       voyages: await listVoyageBundles(),
       disk,
       ajrmMarineLogger: {
@@ -2774,6 +3066,10 @@ module.exports = function ajrmMarineCapture(app) {
       },
       { path: "plugins.ajrmMarineCapture.lastBundle.fileName", value: lastBundle?.fileName || null },
       { path: "plugins.ajrmMarineCapture.lastBundle.path", value: lastBundle?.path || null },
+      {
+        path: "plugins.ajrmMarineCapture.finalisation",
+        value: finalisation,
+      },
     ];
     if (disk) {
       values.push(
@@ -4176,22 +4472,107 @@ function unsafeZipEntryName(entryName) {
   return path.isAbsolute(entryName) || entryName.split(/[\\/]+/).includes("..");
 }
 
-async function writeDirectoryZip(zipPath, rootDir) {
-  const zip = new AdmZip();
-  async function addDirectory(directory, prefix = "") {
-    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+async function writeDirectoryZip(zipPath, rootDir, { onProgress } = {}) {
+  const files = await listFilesForStreamingZip(rootDir);
+  const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
+  const storedGzipEntries = files.filter((file) =>
+    file.relativePath.toLowerCase().endsWith(".gz"),
+  ).length;
+  const partialPath = `${zipPath}.partial`;
+  await fs.promises.rm(partialPath, { force: true });
+  const output = fs.createWriteStream(partialPath, { flags: "wx" });
+  const archive = new ZipArchive({
+    zlib: { level: 6 },
+  });
+  let entriesProcessed = 0;
+  let inputBytesProcessed = 0;
+  const report = (state, currentEntry = null) => {
+    const outputBytes = Number(archive.pointer() || 0);
+    const percent = totalBytes > 0
+      ? Math.min(100, inputBytesProcessed / totalBytes * 100)
+      : state === "complete" ? 100 : 0;
+    onProgress?.({
+      contract: "ajrm-marine-capture-zip-progress",
+      contractVersion: 1,
+      state,
+      entriesTotal: files.length,
+      entriesProcessed,
+      inputBytesTotal: totalBytes,
+      inputBytesProcessed,
+      outputBytes,
+      percent,
+      currentEntry,
+      storedGzipEntries,
+      temporaryPath: path.basename(partialPath),
+      outputFile: path.basename(zipPath),
+    });
+  };
+  const completed = new Promise((resolve, reject) => {
+    output.once("close", resolve);
+    output.once("error", reject);
+    archive.once("error", reject);
+    archive.on("warning", (error) => {
+      if (error?.code !== "ENOENT") reject(error);
+    });
+    archive.on("progress", (progress) => {
+      entriesProcessed = Number(progress?.entries?.processed || 0);
+      inputBytesProcessed = Number(progress?.fs?.processedBytes || 0);
+      report("building");
+    });
+    archive.on("entry", (entry) => {
+      report("building", entry?.name || null);
+    });
+  });
+
+  try {
+    report("building");
+    archive.pipe(output);
+    for (const file of files) {
+      archive.file(file.fullPath, {
+        name: file.relativePath,
+        store: file.relativePath.toLowerCase().endsWith(".gz"),
+      });
+    }
+    await archive.finalize();
+    await completed;
+    await fs.promises.rename(partialPath, zipPath);
+    entriesProcessed = files.length;
+    inputBytesProcessed = totalBytes;
+    report("complete");
+  } catch (error) {
+    archive.abort();
+    output.destroy();
+    await fs.promises.rm(partialPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function listFilesForStreamingZip(rootDir) {
+  const files = [];
+  async function visit(directory, prefix = "") {
+    const entries = await fs.promises.readdir(directory, {
+      withFileTypes: true,
+    });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const fullPath = path.join(directory, entry.name);
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const relativePath = (
+        prefix ? `${prefix}/${entry.name}` : entry.name
+      ).replace(/\\/g, "/");
       if (entry.isDirectory()) {
-        await addDirectory(fullPath, relativePath);
+        await visit(fullPath, relativePath);
       } else if (entry.isFile()) {
-        zip.addFile(relativePath, await fs.promises.readFile(fullPath));
+        const info = await fs.promises.stat(fullPath);
+        files.push({
+          fullPath,
+          relativePath,
+          bytes: info.size,
+        });
       }
     }
   }
-  await addDirectory(rootDir);
-  zip.writeZip(zipPath);
+  await visit(rootDir);
+  return files;
 }
 
 function reconcilePortableCaptureReferences(index, copiedReferences = []) {
@@ -4570,4 +4951,5 @@ module.exports._private = {
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,
   speedKnotsFromMps,
+  writeDirectoryZip,
 };

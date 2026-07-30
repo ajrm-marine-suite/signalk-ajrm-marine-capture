@@ -60,7 +60,7 @@
               <button id="stopReplayCaptureButton" type="button" class="secondary">Stop and build ZIP</button>
               <button id="interruptReplayCaptureButton" type="button" class="delete-button">Interrupt replay</button>
             </div>
-            <p class="field-note">Disable or disconnect live sensor inputs and restart Signal K first, leaving the calculation plugins enabled. Then load the parent voyage. Press Start replay result once: Capture arms Logger and immediately starts the sensor replay at 1x. Return here after playback ends to build the verified ZIP. Interrupt replay stops early and preserves any partial output in an explicitly incomplete, unverified ZIP. Logger records a contamination warning for detected live inputs but cannot stop them influencing live calculations.</p>
+            <p class="field-note">Disable or disconnect live sensor inputs and restart Signal K first, leaving the calculation plugins enabled. Then load the parent voyage. Press Start replay result once: Capture arms Logger and immediately starts the sensor replay at 1x. Return here after playback ends to build the verified ZIP. After Logger closes, ZIP progress is reported here independently; compressed Logger segments are streamed from disk into the ZIP without recompression. Interrupt replay stops early and preserves any partial output in an explicitly incomplete, unverified ZIP. Logger records a contamination warning for detected live inputs but cannot stop them influencing live calculations.</p>
           </div>
         </article>
 
