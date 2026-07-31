@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.13
+
+- Require AJRM Marine Logger's explicit effective-rate timing result before a
+  recomputed voyage can be certified.
+- Preserve legacy compatibility for captures that predate the timing
+  requirement while failing closed for every newly started recomputation.
+
 ## 0.6.12
 
 - Require Logger's explicit live-input-isolation result before marking a

@@ -38,6 +38,44 @@ test("recomputed replay verification fails closed when required isolation is inv
   );
 });
 
+test("recomputed replay verification fails closed when required timing is slow or missing", () => {
+  assert.deepEqual(
+    recomputedReplayVerification(
+      { liveInputIsolationRequired: true, timingRequired: true },
+      {
+        liveInputIsolation: { valid: true },
+        timing: { valid: false, effectiveRate: 0.12 },
+      },
+    ),
+    {
+      verified: false,
+      failure:
+        "AJRM Marine Logger measured an invalid effective replay rate of 0.12x",
+    },
+  );
+  assert.deepEqual(
+    recomputedReplayVerification(
+      { liveInputIsolationRequired: true, timingRequired: true },
+      { liveInputIsolation: { valid: true } },
+    ),
+    {
+      verified: false,
+      failure:
+        "AJRM Marine Logger did not provide valid effective replay timing",
+    },
+  );
+  assert.equal(
+    recomputedReplayVerification(
+      { liveInputIsolationRequired: true, timingRequired: true },
+      {
+        liveInputIsolation: { valid: true },
+        timing: { valid: true, effectiveRate: 0.98 },
+      },
+    ).verified,
+    true,
+  );
+});
+
 test("completed replay with failed isolation is packaged but never certified", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "ajrm-capture-unverified-complete-"),

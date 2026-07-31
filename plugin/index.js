@@ -878,6 +878,8 @@ module.exports = function ajrmMarineCapture(app) {
       sourceFilterStatsAtStart: playback.sourceFilterStats || null,
       liveInputIsolationRequired: true,
       liveInputIsolationAtStart: playback.liveInputIsolation || null,
+      timingRequired: true,
+      timingAtStart: playback.timing || null,
     };
     const replayComment = normalizeComment(comment) ||
       `Recomputed replay of ${parentVoyage}`;
@@ -5096,17 +5098,29 @@ function safeBaseName(value) {
 }
 
 function recomputedReplayVerification(recomputedReplay, replayResult) {
-  if (recomputedReplay?.liveInputIsolationRequired !== true) {
-    return { verified: true, failure: null };
+  if (
+    recomputedReplay?.liveInputIsolationRequired === true &&
+    replayResult?.liveInputIsolation?.valid !== true
+  ) {
+    return {
+      verified: false,
+      failure:
+        "AJRM Marine Logger reported that live-input isolation was not valid",
+    };
   }
-  if (replayResult?.liveInputIsolation?.valid === true) {
-    return { verified: true, failure: null };
+  if (
+    recomputedReplay?.timingRequired === true &&
+    replayResult?.timing?.valid !== true
+  ) {
+    const rate = replayResult?.timing?.effectiveRate;
+    return {
+      verified: false,
+      failure: Number.isFinite(rate)
+        ? `AJRM Marine Logger measured an invalid effective replay rate of ${rate.toFixed(2)}x`
+        : "AJRM Marine Logger did not provide valid effective replay timing",
+    };
   }
-  return {
-    verified: false,
-    failure:
-      "AJRM Marine Logger reported that live-input isolation was not valid",
-  };
+  return { verified: true, failure: null };
 }
 
 module.exports._private = {
