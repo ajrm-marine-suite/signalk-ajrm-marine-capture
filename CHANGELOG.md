@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+- Make the fixed-rate replay integration fixture long enough for effective-rate
+  validation on busy CI runners and surface replay failure immediately.
+
 ## 0.7.1
 
 - Allow the canonical replay integration test enough wall time on Windows and

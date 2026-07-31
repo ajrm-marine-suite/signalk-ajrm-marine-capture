@@ -127,7 +127,7 @@ test("Capture replays canonical input at fixed 1x and builds a verified child ZI
     Buffer.from(JSON.stringify({
       id: "voyage-parent",
       startedAt: "2026-07-01T10:00:00.000Z",
-      stoppedAt: "2026-07-01T10:00:00.020Z",
+      stoppedAt: "2026-07-01T10:00:04.000Z",
       canonicalInput: {
         contract: INPUT_CONTRACT,
         schemaVersion: 1,
@@ -137,7 +137,7 @@ test("Capture replays canonical input at fixed 1x and builds a verified child ZI
       },
     })),
   );
-  const records = [0, 10, 20].map((elapsedMs) =>
+  const records = [0, 2000, 4000].map((elapsedMs) =>
     canonicalInputRecord({
       elapsedMs,
       delta: {
@@ -178,6 +178,9 @@ test("Capture replays canonical input at fixed 1x and builds a verified child ZI
     assert.equal(started.body.voyage.recomputedReplay.inputContract, INPUT_CONTRACT);
     await waitFor(async () => {
       const status = await invoke(routes, "GET", "/status");
+      if (status.body.playback.state === "failed") {
+        throw new Error(status.body.playback.error || "Replay failed");
+      }
       return status.body.playback.state === "complete";
     });
     const status = await invoke(routes, "GET", "/status");
