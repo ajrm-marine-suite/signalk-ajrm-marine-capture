@@ -332,7 +332,7 @@ async function invoke(routes, method, route, body = {}) {
   return { statusCode, body: payload };
 }
 
-async function waitFor(predicate, timeoutMs = 2000) {
+async function waitFor(predicate, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;

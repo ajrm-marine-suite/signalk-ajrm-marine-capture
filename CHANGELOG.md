@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+- Allow the canonical replay integration test enough wall time on Windows and
+  emulated armv7 CI runners without changing the replay timing contract.
+
 ## 0.7.0
 
 - Merge AJRM Marine Logger recording and replay into Capture.
