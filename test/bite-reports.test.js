@@ -20,10 +20,13 @@ test("Capture bundles voyage-window Console BITE reports for offline debugging",
   assert.match(source, /bite-reports-none/);
 });
 
-test("startup recovery rediscovers logger segments for interrupted voyages", () => {
-  assert.match(source, /async function closeIncompleteVoyageDirectory/);
-  assert.match(source, /await copyCaptureFiles\(voyage, voyage\.captureStop\);/);
-  assert.match(source, /No AJRM Marine Logger segments matched the recovered voyage range/);
+test("startup retains interrupted working directories without legacy reconstruction", () => {
+  assert.match(source, /async function reportInterruptedVoyageDirectories/);
+  assert.match(source, /retained for manual inspection/);
+  assert.match(
+    source,
+    /cleanupPortableDownloadWorkspacesOnStartup\(\),\s*reportInterruptedVoyageDirectories\(\)/s,
+  );
 });
 
 test("BITE report filtering includes only reports that overlap the voyage", () => {

@@ -94,7 +94,7 @@ test("manual stop inhibits automatic restart until a stationary sample is seen",
   assert.equal(movingAgain.autoStartInhibited, false);
 });
 
-test("logger playback suppression prevents movement autostart", () => {
+test("Capture replay suppression prevents movement autostart", () => {
   const suppressed = nextMovementGateState({
     speedKnots: 6,
     movementSpeedKnots: 0.68,

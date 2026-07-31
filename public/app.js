@@ -53,6 +53,7 @@ elements.startButton.addEventListener("click", () => recorderCommand("start", "/
 elements.stopButton.addEventListener("click", () => recorderCommand("stop", "/voyage/stop", { manual: true }));
 elements.startReplayCaptureButton.addEventListener("click", () =>
   replayRecorderCommand("start", "/voyage/replay/start", {
+    file: selectedBundle && selectedBundle.fileName,
     comment: elements.commentInput.value,
   }),
 );
@@ -160,9 +161,11 @@ function render(status) {
     ? `${Number(status.thresholds.movementSpeedKnots || 0).toFixed(2)} kn / ${Number(status.thresholds.movementSpeedMetersPerSecond || 0).toFixed(2)} m/s`
     : "-";
   elements.modeValue.textContent = `${titleCase(status.captureMode || "voyage")} / ${titleCase(status.captureFileMode || "portable")}`;
-  elements.captureValue.textContent = status.ajrmMarineLogger && status.ajrmMarineLogger.ok
-    ? captureText(status.ajrmMarineLogger)
-    : "not available";
+  elements.captureValue.textContent = status.currentVoyage?.recomputedReplay
+    ? "recording recomputed output"
+    : status.currentVoyage
+      ? "recording canonical YDEN input"
+      : "idle";
   elements.snapshotValue.textContent = status.currentVoyage
     ? `${status.currentVoyage.snapshotCount || 0}`
     : "-";
@@ -189,8 +192,7 @@ function renderRecorderButtons(status) {
   if (recorderActionLatch === "start" && activeVoyage === true) recorderActionLatch = null;
   if (recorderActionLatch === "stop" && activeVoyage === false) recorderActionLatch = null;
   const busy = pendingRecorderAction === "start" || pendingRecorderAction === "stop";
-  const playbackActive = Boolean(status.ajrmMarineLogger && status.ajrmMarineLogger.playback &&
-    status.ajrmMarineLogger.playback.active);
+  const playbackActive = status.playback?.active === true;
   elements.startButton.disabled = busy || recorderActionLatch === "start" || activeVoyage === true || playbackActive;
   elements.stopButton.disabled =
     busy ||
@@ -213,48 +215,23 @@ async function replayRecorderCommand(action, path, body) {
 }
 
 function renderReplayRecorder(status) {
-  const playback = status.ajrmMarineLogger && status.ajrmMarineLogger.playback || {};
-  const coverage = playback.coverage || {};
+  const playback = status.playback || {};
   const currentVoyage = status.currentVoyage || null;
   const recomputedActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
-  const playbackError =
-    playback.lastError && typeof playback.lastError === "object"
-      ? playback.lastError
-      : null;
-  const resultCaptureActive = Boolean(
-    playback.resultCapture && playback.resultCapture.active === true,
-  );
-  const sourceIds = playback.sourcePolicy &&
-    (
-      playback.sourcePolicy.resolvedSensorSourceIds ||
-      playback.sourcePolicy.sensorSourceIds
-    ) || [];
-  const ready = playback.loaded &&
-    playback.mode === "sensor-sources" &&
-    playback.sourcePolicy &&
-    playback.sourcePolicy.id === "strict-recorded-sensor-source-allowlist-v1" &&
-    sourceIds.length > 0 &&
-    playback.rate === 1 &&
-    !playbackError &&
-    !playback.active &&
-    !playback.paused &&
-    Number(playback.cursor || 0) === Number(playback.startCursor || 0);
+  const selectedReady =
+    selectedBundle?.canonicalInput?.contract === status.canonicalInputContract;
   const replayFinished =
-    coverage.complete === true &&
-    coverage.preparedComplete === true &&
-    (playback.lastReason || coverage.lastReason) === "end of capture" &&
-    !playback.active &&
-    !playback.paused &&
-    !playbackError;
-  const playbackComplete = replayFinished && resultCaptureActive;
+    playback.state === "complete" &&
+    playback.complete === true &&
+    playback.valid === true;
   const finalisationRunning = status.finalisation?.state === "running";
   const busy = pendingReplayAction === "start" ||
     pendingReplayAction === "stop" ||
     pendingReplayAction === "abort";
   elements.startReplayCaptureButton.disabled =
-    busy || finalisationRunning || Boolean(currentVoyage) || !ready;
+    busy || finalisationRunning || Boolean(currentVoyage) || !selectedReady;
   elements.stopReplayCaptureButton.disabled =
-    busy || finalisationRunning || !recomputedActive || !playbackComplete;
+    busy || finalisationRunning || !recomputedActive || !replayFinished;
   elements.interruptReplayCaptureButton.disabled =
     busy || finalisationRunning || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
@@ -267,63 +244,33 @@ function renderReplayRecorder(status) {
       : "Stop and build ZIP";
   elements.interruptReplayCaptureButton.textContent =
     pendingReplayAction === "abort" ? "Interrupting..." : "Interrupt replay";
-  renderReplayProgress(
-    status,
-    playback,
-    recomputedActive,
-    resultCaptureActive,
-    playbackComplete,
-    replayFinished,
-    playbackError,
-  );
+  renderReplayProgress(status, playback, recomputedActive, replayFinished);
   if (finalisationRunning) {
     elements.replayCaptureInfo.textContent =
       `Replay complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the recomputed voyage"}.`;
   } else if (recomputedActive) {
     elements.replayCaptureInfo.textContent =
-      `Capturing recomputed replay of ${currentVoyage.recomputedReplay.parentVoyage || "parent voyage"}.`;
-  } else if (ready) {
+      `Capture is replaying ${currentVoyage.recomputedReplay.parentVoyage || "the parent voyage"} at fixed 1x and recording recomputed output.`;
+  } else if (selectedReady) {
     elements.replayCaptureInfo.textContent =
-      `Ready: ${playback.displayFileName || playback.fileName || "loaded voyage"}; exact sensors ${sourceIds.join(", ")}.`;
-  } else if (
-    playback.loaded &&
-    playback.mode === "sensor-sources" &&
-    playback.rate !== 1
-  ) {
+      `Ready to replay ${selectedBundle.fileName}.`;
+  } else if (selectedBundle) {
     elements.replayCaptureInfo.textContent =
-      "Select 1x in AJRM Marine Logger before starting the result capture.";
-  } else if (
-    playback.loaded &&
-    playback.mode === "sensor-sources" &&
-    sourceIds.length === 0
-  ) {
-    elements.replayCaptureInfo.textContent =
-      "No exact recorded sensor source IDs were resolved. Check the source policy in Logger.";
-  } else if (playback.loaded) {
-    elements.replayCaptureInfo.textContent =
-      "Loaded playback is not in Sensor sources only mode. Change the mode in AJRM Marine Logger.";
+      `${selectedBundle.fileName} is a legacy/view-only voyage without canonical input.`;
   } else {
     elements.replayCaptureInfo.textContent =
-      "Load a voyage in Logger using Sensor sources only mode.";
+      "Select a canonical voyage bundle below, then start its fixed 1x replay.";
   }
 }
 
-function renderReplayProgress(
-  status,
-  playback,
-  recomputedActive,
-  resultCaptureActive,
-  playbackComplete,
-  replayFinished,
-  playbackError,
-) {
+function renderReplayProgress(status, playback, recomputedActive, replayFinished) {
   const finalisation = status.finalisation || null;
   if (finalisation?.state === "running") {
     const zip = finalisation.zip || null;
-    if (replayFinished || finalisation.loggerClosed === true) {
-      elements.replayPlaybackState.textContent = finalisation.loggerClosed === true
-        ? "Complete · Logger recorder closed"
-        : "Complete · finalising Logger result";
+    if (replayFinished || finalisation.streamsClosed === true) {
+      elements.replayPlaybackState.textContent = finalisation.streamsClosed === true
+        ? "Complete · Capture streams closed"
+        : "Complete · finalising recomputed result";
     }
     elements.replayFinaliseValue.textContent = zip
       ? `Building ZIP · ${Number(zip.percent || 0).toFixed(1)}% · ${zip.entriesProcessed || 0}/${zip.entriesTotal || 0} files · ${formatBytes(zip.outputBytes || 0)} written`
@@ -358,55 +305,31 @@ function renderReplayProgress(
       state: "idle",
     });
   }
-  const coverage = playback.coverage || {};
-  const lastReason = playback.lastReason || coverage.lastReason || null;
-  const replayedLines = finiteNumber(
-    coverage.replayedLines,
-    Math.max(0, Number(coverage.cursor ?? playback.cursor ?? 0) -
-      Number(coverage.startCursor ?? playback.startCursor ?? 0)),
-  );
-  const replayableLines = finiteNumber(
-    coverage.replayableLines,
-    Math.max(0, Number(coverage.totalLines ?? playback.totalLines ?? 0) -
-      Number(coverage.startCursor ?? playback.startCursor ?? 0)),
-  );
-  const percent = replayableLines > 0
-    ? Math.min(100, Math.max(0, replayedLines / replayableLines * 100))
+  const replayedRecords = finiteNumber(playback.recordsReplayed, 0);
+  const totalRecords = finiteNumber(playback.recordsTotal, 0);
+  const percent = totalRecords > 0
+    ? Math.min(100, Math.max(0, replayedRecords / totalRecords * 100))
     : null;
-  const segmentsCompleted = finiteNumber(coverage.segmentsCompleted, null);
-  const segmentsTotal = finiteNumber(coverage.segmentsTotal, null);
-  const cursor = finiteNumber(coverage.cursor ?? playback.cursor, null);
-  const totalLines = finiteNumber(
-    coverage.totalLines ?? playback.totalLines,
-    null,
-  );
 
-  if (!(finalisation?.state === "running" && (replayFinished || finalisation.loggerClosed === true))) {
-    elements.replayPlaybackState.textContent = !playback.loaded
-    ? "Not loaded"
-    : playbackError
-      ? `FAILED${lastReason ? ` · ${lastReason}` : ""}`
-      : playback.active
-      ? `Playing at ${playback.rate || 1}x${lastReason ? ` · ${lastReason}` : ""}`
-      : playback.paused
-        ? `Paused${lastReason ? ` · ${lastReason}` : ""}`
-        : playbackComplete
-          ? "Complete · end of capture"
-          : resultCaptureActive && lastReason === "loaded"
-            ? "Armed · playback has not started"
-            : `Stalled / incomplete${lastReason ? ` · ${lastReason}` : ""}`;
+  if (!(finalisation?.state === "running" && (replayFinished || finalisation.streamsClosed === true))) {
+    elements.replayPlaybackState.textContent =
+      playback.state === "failed"
+        ? `FAILED · ${playback.error || "timing failure"}`
+        : playback.state === "aborted"
+          ? "Interrupted"
+          : playback.active
+            ? `Playing at fixed 1x · effective ${Number(playback.effectiveRatio || 0).toFixed(3)}x`
+            : replayFinished
+              ? "Complete · canonical input EOF"
+              : titleCase(playback.state || "idle");
   }
-  elements.replayProgressValue.textContent = replayableLines > 0
-    ? `${replayedLines} of ${replayableLines} replay deltas${percent === null ? "" : ` · ${percent.toFixed(1)}%`}${cursor !== null && totalLines !== null ? ` · cursor ${cursor}/${totalLines}` : ""}`
-    : playback.loaded
-      ? cursor !== null && totalLines !== null
-        ? `No replayable deltas reported · cursor ${cursor}/${totalLines}`
-        : "No replayable deltas reported"
-      : "-";
+  elements.replayProgressValue.textContent = totalRecords > 0
+    ? `${replayedRecords} of ${totalRecords} input records · ${percent.toFixed(1)}%`
+    : "-";
   renderTaskProgress(elements.replayProgressBar, {
-    active: playback.loaded || replayedLines > 0,
+    active: playback.state !== "idle" || replayedRecords > 0,
     percent,
-    state: playbackError
+    state: playback.state === "failed"
       ? "failed"
       : replayFinished
         ? "complete"
@@ -414,23 +337,20 @@ function renderReplayProgress(
           ? "running"
           : "idle",
   });
-  elements.replaySegmentsValue.textContent =
-    segmentsCompleted !== null && segmentsTotal !== null
-      ? `${segmentsCompleted} of ${segmentsTotal} complete`
-      : playback.loaded
-        ? "Not reported"
-        : "-";
+  elements.replaySegmentsValue.textContent = playback.sourceDurationMs > 0
+    ? `Single monotonic stream · ${formatDuration(playback.sourceDurationMs)} source · maximum lag ${Math.round(playback.maximumObservedLagMs || 0)} ms`
+    : "Single monotonic stream";
   if (!finalisation || !["running", "complete", "failed"].includes(finalisation.state)) {
-    elements.replayFinaliseValue.textContent = replayFinaliseReason({
-      loggerStatus: status.ajrmMarineLogger || {},
-      playback,
-      coverage,
-      recomputedActive,
-      resultCaptureActive,
-      playbackComplete,
-      lastReason,
-      playbackError,
-    });
+    elements.replayFinaliseValue.textContent =
+      !recomputedActive
+        ? "Start a canonical voyage replay first."
+        : playback.state === "failed"
+          ? `FAILED: ${playback.error || "Replay timing invalid"}. Interrupt to preserve partial evidence.`
+          : playback.active
+            ? "Available after canonical input EOF."
+            : replayFinished
+              ? "Ready: EOF and valid effective timing confirmed."
+              : "Waiting for replay.";
   }
 }
 
@@ -446,55 +366,6 @@ function renderTaskProgress(element, { active, percent, state }) {
   } else {
     element.removeAttribute("value");
   }
-}
-
-function replayFinaliseReason({
-  loggerStatus,
-  playback,
-  coverage,
-  recomputedActive,
-  resultCaptureActive,
-  playbackComplete,
-  lastReason,
-  playbackError,
-}) {
-  if (!recomputedActive) {
-    return "Start a replay result capture before playing the parent voyage.";
-  }
-  if (loggerStatus.ok === false) {
-    return `Disabled: Logger status is unavailable${loggerStatus.error ? ` — ${loggerStatus.error}` : ""}. Interrupt the replay to preserve partial evidence.`;
-  }
-  if (playbackError) {
-    const location = Number.isFinite(Number(playbackError.cursor))
-      ? ` at cursor ${Number(playbackError.cursor)}`
-      : "";
-    return `FAILED${location}: ${playbackError.message || "Logger reported a playback error"}. Interrupt now to preserve the incomplete evidence ZIP.`;
-  }
-  if (!resultCaptureActive) {
-    return "Disabled: Logger's replay-result recorder is no longer active. Interrupt the replay to preserve partial evidence.";
-  }
-  if (playback.active) {
-    return "Disabled while Logger is playing. It will enable after every prepared segment reaches the end.";
-  }
-  if (playback.paused) {
-    return "Disabled while Logger reports playback paused. Interrupt this incomplete run and retry.";
-  }
-  if (coverage.preparedComplete !== true) {
-    return "Disabled: Logger has not confirmed that every source segment was prepared.";
-  }
-  if (coverage.complete !== true) {
-    if (lastReason === "loaded") {
-      return "Disabled: press Play in Logger to begin the 1x sensor replay.";
-    }
-    return `Disabled: Logger has not completed replay coverage${lastReason ? ` (last reason: ${lastReason})` : ""}. Interrupt this incomplete run if it cannot continue.`;
-  }
-  if (lastReason !== "end of capture") {
-    return `Disabled: full coverage is reported, but Logger's last reason is ${lastReason || "not available"}, not end of capture.`;
-  }
-  if (!playbackComplete) {
-    return "Disabled until Logger confirms the result recorder and final replay state.";
-  }
-  return "Ready: complete prepared coverage and end of capture confirmed.";
 }
 
 function finiteNumber(value, fallback) {
@@ -535,6 +406,7 @@ function renderVoyageBundles(voyages) {
       const voyage = voyages.find((item) => item.fileName === button.dataset.bundle);
       selectedBundle = voyage || null;
       renderVoyageBundles(voyages);
+      if (latestStatus) renderReplayRecorder(latestStatus);
     });
   });
 }
@@ -562,18 +434,24 @@ async function deleteVoyage(fileName) {
   await command(`/voyages/${encodeURIComponent(fileName)}/delete`, {});
 }
 
-function captureText(ajrmMarineLogger) {
-  if (ajrmMarineLogger.recording) return `recording ${ajrmMarineLogger.recording.fileName || ""}`;
-  if (ajrmMarineLogger.playback && ajrmMarineLogger.playback.active) return "playback active";
-  return "idle";
-}
-
 function formatBytes(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
   if (number > 1024 * 1024 * 1024) return `${(number / 1024 / 1024 / 1024).toFixed(1)} GB`;
   if (number > 1024 * 1024) return `${(number / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.round(number / 1024)} KB`;
+}
+
+function formatDuration(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "-";
+  const totalSeconds = Math.round(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
 }
 
 function formatTime(value) {

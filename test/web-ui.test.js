@@ -39,35 +39,30 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(htmlSource, /id="stopReplayCaptureButton"/);
   assert.match(htmlSource, /id="interruptReplayCaptureButton"/);
   assert.match(htmlSource, />Interrupt replay<\/button>/);
-  assert.match(htmlSource, /immediately starts the sensor replay at 1x/);
+  assert.match(htmlSource, /single monotonic input stream server-side at fixed 1x/);
   assert.match(appSource, /"\/voyage\/replay\/start"/);
   assert.match(appSource, /"\/voyage\/replay\/stop"/);
   assert.match(appSource, /"\/voyage\/replay\/abort"/);
-  assert.match(appSource, /playback\.mode === "sensor-sources"/);
-  assert.match(appSource, /strict-recorded-sensor-source-allowlist-v1/);
-  assert.match(appSource, /coverage\.preparedComplete === true/);
-  assert.match(
-    appSource,
-    /\(playback\.lastReason \|\| coverage\.lastReason\) === "end of capture"/,
-  );
+  assert.match(appSource, /selectedBundle\?\.canonicalInput\?\.contract === status\.canonicalInputContract/);
+  assert.match(appSource, /playback\.state === "complete"/);
+  assert.match(appSource, /playback\.valid === true/);
   assert.match(
     appSource,
     /status\.currentVoyage && status\.currentVoyage\.recomputedReplay/,
   );
-  assert.match(appSource, /playback\.lastError/);
-  assert.match(appSource, /cursor \$\{cursor\}\/\$\{totalLines\}/);
-  assert.match(appSource, /Interrupt now to preserve the incomplete evidence ZIP/);
-  assert.match(appSource, /Complete · Logger recorder closed/);
+  assert.match(appSource, /playback\.recordsReplayed/);
+  assert.match(appSource, /Single monotonic stream/);
+  assert.match(appSource, /Complete · Capture streams closed/);
   assert.match(appSource, /Building ZIP · \$\{Number\(zip\.percent/);
   assert.match(htmlSource, /id="replayProgressBar"/);
   assert.match(htmlSource, /id="replayFinaliseProgressBar"/);
   assert.match(appSource, /renderTaskProgress\(elements\.replayFinaliseProgressBar/);
   assert.match(appSource, /element\.removeAttribute\("value"\)/);
   assert.match(appSource, /Replay complete; finalising/);
-  assert.match(appSource, /Complete · finalising Logger result/);
+  assert.match(appSource, /Complete · finalising recomputed result/);
   assert.match(appSource, /finalisationRunning \|\| !recomputedActive/);
-  assert.match(htmlSource, /ZIP progress is reported here independently/);
-  assert.match(htmlSource, /without recompression/);
+  assert.match(htmlSource, /browser may be closed/);
+  assert.match(htmlSource, /legacy input remain available|Older bundles without canonical input/);
   assert.match(appSource, /window\.confirm/);
 });
 

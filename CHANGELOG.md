@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0
+
+- Merge AJRM Marine Logger recording and replay into Capture.
+- Store exactly one canonical physical-input JSONL stream on a monotonic
+  `elapsedMs` timeline.
+- Replay only canonical input, server-side, at fixed `1x`; refresh Signal K
+  timestamps and publish the explicit original voyage time.
+- Fail on excessive scheduler lag instead of rebasing, throttling silently, or
+  issuing a catch-up burst.
+- Store recomputed Signal K output separately as evidence that cannot be
+  replayed as input.
+- Verify recomputation from canonical EOF coverage and effective timing only.
+- Remove live-YDEN isolation and legacy runtime timestamp normalization.
+- Treat older bundles as view/download-only unless converted once to the new
+  input contract.
+- Replace legacy startup reconstruction with a simple report that retains
+  interrupted working directories for inspection.
+
 ## 0.6.13
 
 - Require AJRM Marine Logger's explicit effective-rate timing result before a

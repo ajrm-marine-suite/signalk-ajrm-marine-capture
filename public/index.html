@@ -11,7 +11,7 @@
       <header>
         <div>
           <h1>AJRM Marine Capture</h1>
-          <p>Automatic AJRM Marine Logger and snapshot bundling for real sailing review and diagnostics.</p>
+          <p>Canonical voyage recording, fixed-rate replay, and diagnostic bundling in one plugin.</p>
         </div>
         <button id="refreshButton" type="button">Refresh</button>
       </header>
@@ -31,7 +31,7 @@
             <div><dt>Speed</dt><dd id="speedValue">-</dd></div>
             <div><dt>Threshold</dt><dd id="thresholdValue">-</dd></div>
             <div><dt>Mode</dt><dd id="modeValue">-</dd></div>
-            <div><dt>AJRM Marine Logger</dt><dd id="captureValue">-</dd></div>
+            <div><dt>Voyage data</dt><dd id="captureValue">-</dd></div>
             <div><dt>Snapshots</dt><dd id="snapshotValue">-</dd></div>
             <div><dt>Disk</dt><dd id="diskValue">-</dd></div>
           </dl>
@@ -48,9 +48,9 @@
           </div>
           <div class="replay-capture">
             <h3>Recomputed voyage replay</h3>
-            <p id="replayCaptureInfo">Load a voyage in Logger using Sensor sources only mode.</p>
+            <p id="replayCaptureInfo">Select a canonical voyage bundle below.</p>
             <dl class="replay-status" aria-live="polite">
-              <div><dt>Logger playback</dt><dd id="replayPlaybackState">Not loaded</dd></div>
+              <div><dt>Capture replay</dt><dd id="replayPlaybackState">Idle</dd></div>
               <div>
                 <dt>Replay progress</dt>
                 <dd>
@@ -58,7 +58,7 @@
                   <progress id="replayProgressBar" class="task-progress" max="100" value="0" aria-label="Voyage replay progress"></progress>
                 </dd>
               </div>
-              <div><dt>Segments</dt><dd id="replaySegmentsValue">-</dd></div>
+              <div><dt>Input timeline</dt><dd id="replaySegmentsValue">-</dd></div>
               <div>
                 <dt>Finalisation</dt>
                 <dd>
@@ -72,7 +72,7 @@
               <button id="stopReplayCaptureButton" type="button" class="secondary">Stop and build ZIP</button>
               <button id="interruptReplayCaptureButton" type="button" class="delete-button">Interrupt replay</button>
             </div>
-            <p class="field-note">Disable or disconnect live sensor inputs and restart Signal K first, leaving the calculation plugins enabled. Then load the parent voyage. Press Start replay result once: Capture arms Logger and immediately starts the sensor replay at 1x. Return here after playback ends to build the verified ZIP. After Logger closes, ZIP progress is reported here independently; compressed Logger segments are streamed from disk into the ZIP without recompression. Interrupt replay stops early and preserves any partial output in an explicitly incomplete, unverified ZIP. Logger records a contamination warning for detected live inputs but cannot stop them influencing live calculations.</p>
+            <p class="field-note">Select a voyage containing canonical input, then press Start replay result. Capture replays the single monotonic input stream server-side at fixed 1x and records recomputed output; the browser may be closed. After canonical input EOF, use Stop and build ZIP. Interrupt replay preserves partial output in an explicitly incomplete, unverified ZIP. Older bundles without canonical input remain available for viewing and download but cannot be replayed directly.</p>
           </div>
         </article>
 
