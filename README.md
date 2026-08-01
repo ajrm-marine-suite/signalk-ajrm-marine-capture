@@ -76,6 +76,31 @@ voyage matters, convert its physical input once into the canonical JSONL
 format. This keeps all legacy timestamp repair outside normal recording and
 replay.
 
+Run the one-off converter from a Capture source checkout or installed package:
+
+```bash
+npm run convert:legacy-voyage -- /path/to/voyage.zip
+```
+
+It also accepts an extracted voyage directory. The default output is a new
+`*-canonical.zip`; the source is never changed and an existing output is never
+overwritten. Use `--output /path/to/name.zip` to choose another destination.
+
+The converter:
+
+- reads only the voyage window explicitly declared by `index.json`;
+- retains only updates whose explicit source matches `YDEN` (additional
+  physical prefixes can be supplied with `--source-prefix`);
+- keeps every original delta value and embedded timestamp unchanged;
+- derives `elapsedMs` from the legacy envelope `capturedAt` field in file
+  order, clamping backwards timestamps to the preceding logical time; and
+- adds `conversion/legacy-conversion-report.json` with record counts, timing
+  regressions, the exact repair rule, validation result, and SHA-256 digest.
+
+The converted ZIP is accepted by Capture's fixed-rate replay. Conversion is a
+visible migration, not a compatibility mode used by ordinary recording or
+replay.
+
 ## Ordinary voyage recording
 
 Capture can start and stop automatically from explicit motion evidence, or

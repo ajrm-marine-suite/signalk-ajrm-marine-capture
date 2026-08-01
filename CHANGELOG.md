@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+- Add a one-off, non-destructive legacy voyage converter that creates the
+  canonical physical-input stream required by the v0.7 replay engine.
+- Restrict conversion to the explicit voyage window and physical source
+  prefixes, preserve original deltas, clamp backward legacy envelope times,
+  and embed a machine-readable validation and provenance report.
+
 ## 0.7.2
 
 - Make the fixed-rate replay integration fixture long enough for effective-rate
