@@ -99,7 +99,9 @@ The converter:
 
 The converted ZIP is accepted by Capture's fixed-rate replay. Conversion is a
 visible migration, not a compatibility mode used by ordinary recording or
-replay.
+replay. Conversion staging is disk-backed beside the requested output and is
+removed when conversion finishes or fails; large bundles are not staged in
+`/tmp`.
 
 ## Ordinary voyage recording
 

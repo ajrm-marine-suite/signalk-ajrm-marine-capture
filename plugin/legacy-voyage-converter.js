@@ -2,7 +2,6 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const zlib = require("node:zlib");
@@ -37,8 +36,9 @@ async function convertLegacyVoyage({
   }
 
   const prefixes = normalizeSourcePrefixes(sourcePrefixes);
+  await fs.promises.mkdir(path.dirname(output), { recursive: true });
   const temporaryRoot = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "ajrm-legacy-voyage-converter-"),
+    path.join(path.dirname(output), ".ajrm-legacy-voyage-converter-"),
   );
   const bundleDirectory = path.join(temporaryRoot, "bundle");
   try {

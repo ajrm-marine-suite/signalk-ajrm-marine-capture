@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4
+
+- Stage legacy voyage conversion beside the output ZIP on persistent storage,
+  not in potentially RAM-backed `/tmp`, so large Pi conversions remain
+  disk-backed.
+
 ## 0.7.3
 
 - Add a one-off, non-destructive legacy voyage converter that creates the
