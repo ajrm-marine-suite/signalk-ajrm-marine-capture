@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.5
+
+- Convert lightweight legacy reference-mode bundles by reading the exact raw
+  Logger paths declared in `index.captureReferences` when those files still
+  exist.
+- Keep converted bundles self-contained through canonical input without
+  copying the much larger legacy raw capture segments into the new ZIP.
+
 ## 0.7.4
 
 - Stage legacy voyage conversion beside the output ZIP on persistent storage,

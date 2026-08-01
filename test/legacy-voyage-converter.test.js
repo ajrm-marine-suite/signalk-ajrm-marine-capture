@@ -115,6 +115,69 @@ test("legacy converter accepts a ZIP and refuses an existing output", async () =
   }
 });
 
+test("legacy converter reads exact declared reference-mode capture files without embedding them", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-legacy-converter-reference-"));
+  const sourceDirectory = path.join(root, "source");
+  const referencedCapture = path.join(root, "capture-reference.jsonl.gz");
+  const sourceZip = path.join(root, "source.zip");
+  const outputZip = path.join(root, "converted.zip");
+  await fs.mkdir(sourceDirectory, { recursive: true });
+  await writeGzipLines(referencedCapture, [
+    envelope("2026-07-14T10:00:01.000Z", "YDEN.2", "navigation.headingMagnetic", 2),
+  ]);
+  await fs.writeFile(path.join(sourceDirectory, "index.json"), `${JSON.stringify({
+    id: "reference-voyage",
+    startedAt: "2026-07-14T10:00:00.000Z",
+    stoppedAt: "2026-07-14T10:00:10.000Z",
+    captureFileMode: "reference",
+    captureFiles: [],
+    captureReferences: [{
+      fileName: "capture-reference.jsonl",
+      sourcePath: path.join(root, "missing-uncompressed.jsonl"),
+      compressedSourcePath: referencedCapture,
+      from: "2026-07-14T10:00:01.000Z",
+    }],
+  })}\n`);
+  const zip = new AdmZip();
+  zip.addLocalFolder(sourceDirectory);
+  zip.writeZip(sourceZip);
+
+  try {
+    const result = await convertLegacyVoyage({ inputPath: sourceZip, outputPath: outputZip });
+    assert.equal(result.canonicalRecords, 1);
+    assert.equal(result.files[0].sourceKind, "declared-reference");
+    const converted = new AdmZip(outputZip);
+    assert.ok(converted.getEntry(INPUT_RELATIVE_PATH));
+    assert.equal(converted.getEntries().some((entry) => entry.entryName.startsWith("capture/")), false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy converter fails clearly when a declared capture reference is missing", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-legacy-converter-missing-reference-"));
+  const source = path.join(root, "source");
+  const output = path.join(root, "converted.zip");
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, "index.json"), `${JSON.stringify({
+    id: "missing-reference-voyage",
+    startedAt: "2026-07-14T10:00:00.000Z",
+    stoppedAt: "2026-07-14T10:00:10.000Z",
+    captureReferences: [{
+      fileName: "missing.jsonl.gz",
+      sourcePath: path.join(root, "missing.jsonl.gz"),
+    }],
+  })}\n`);
+  try {
+    await assert.rejects(
+      convertLegacyVoyage({ inputPath: source, outputPath: output }),
+      /Missing 1 declared capture reference: missing\.jsonl\.gz/,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("capture files use explicit indexed first timestamps when available", () => {
   assert.deepEqual(
     orderCaptureFiles(["later.jsonl.gz", "earlier.jsonl.gz"], {

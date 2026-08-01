@@ -66,8 +66,9 @@ async function convertLegacyVoyage({
     if (stoppedAtMs < startedAtMs) {
       throw new Error("index.stoppedAt is before index.startedAt");
     }
-    const captureFiles = resolveCaptureFiles(index, bundleDirectory);
-    if (!captureFiles.length) throw new Error("Voyage declares no legacy capture files");
+    const captureSources = await resolveCaptureSources(index, bundleDirectory);
+    if (!captureSources.length) throw new Error("Voyage declares no legacy capture files");
+    const captureFiles = captureSources.map((entry) => entry.fileName);
 
     const canonicalPath = path.join(bundleDirectory, INPUT_RELATIVE_PATH);
     await fs.promises.mkdir(path.dirname(canonicalPath), { recursive: true });
@@ -91,10 +92,11 @@ async function convertLegacyVoyage({
     let previousRawMs = null;
 
     try {
-      for (const fileName of captureFiles) {
-        const capturePath = path.join(bundleDirectory, "capture", fileName);
+      for (const captureSource of captureSources) {
+        const { fileName, filePath: capturePath, kind: sourceKind } = captureSource;
         const fileReport = {
           fileName,
+          sourceKind,
           recordsRead: 0,
           recordsInVoyageWindow: 0,
           canonicalRecords: 0,
@@ -152,7 +154,7 @@ async function convertLegacyVoyage({
         onProgress({
           fileName,
           filesProcessed: report.files.length,
-          filesTotal: captureFiles.length,
+          filesTotal: captureSources.length,
           canonicalRecords: report.canonicalRecords,
         });
       }
@@ -270,16 +272,76 @@ function publicConversionSummary(report) {
   };
 }
 
-function resolveCaptureFiles(index, bundleDirectory) {
+async function resolveCaptureSources(index, bundleDirectory) {
   const declared = Array.isArray(index.captureFiles)
     ? index.captureFiles.map((entry) => path.basename(String(entry || ""))).filter(Boolean)
     : [];
-  if (declared.length) return orderCaptureFiles(declared, index.captureIndex);
   const directory = path.join(bundleDirectory, "capture");
-  return fs.readdirSync(directory, { withFileTypes: true })
+  if (declared.length) {
+    return orderCaptureFiles(declared, index.captureIndex).map((fileName) => ({
+      fileName,
+      filePath: path.join(directory, fileName),
+      kind: "embedded",
+    }));
+  }
+  const embeddedEntries = await fs.promises.readdir(directory, {
+    withFileTypes: true,
+  }).catch(() => []);
+  const embedded = embeddedEntries
     .filter((entry) => entry.isFile() && /\.jsonl(?:\.gz)?$/i.test(entry.name))
     .map((entry) => entry.name)
     .sort((left, right) => left.localeCompare(right));
+  if (embedded.length) {
+    return embedded.map((fileName) => ({
+      fileName,
+      filePath: path.join(directory, fileName),
+      kind: "embedded",
+    }));
+  }
+
+  const references = Array.isArray(index.captureReferences)
+    ? index.captureReferences
+    : [];
+  const resolved = [];
+  const missing = [];
+  for (const reference of references) {
+    const declaredName = path.basename(String(reference?.fileName || ""));
+    const candidates = [
+      reference?.compressedSourcePath,
+      reference?.sourcePath,
+    ]
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean);
+    let selectedPath = null;
+    for (const candidate of candidates) {
+      const info = await fs.promises.stat(candidate).catch(() => null);
+      if (info?.isFile()) {
+        selectedPath = candidate;
+        break;
+      }
+    }
+    if (!selectedPath) {
+      missing.push(declaredName || candidates[0] || "unnamed capture reference");
+      continue;
+    }
+    resolved.push({
+      fileName: path.basename(selectedPath),
+      filePath: selectedPath,
+      kind: "declared-reference",
+      fromMs: Date.parse(reference?.from || ""),
+    });
+  }
+  if (missing.length) {
+    throw new Error(
+      `Missing ${missing.length} declared capture reference${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+    );
+  }
+  return resolved.sort((left, right) => {
+    if (Number.isFinite(left.fromMs) && Number.isFinite(right.fromMs) && left.fromMs !== right.fromMs) {
+      return left.fromMs - right.fromMs;
+    }
+    return left.fileName.localeCompare(right.fileName);
+  });
 }
 
 function orderCaptureFiles(fileNames, captureIndex) {
@@ -459,4 +521,5 @@ module.exports = {
   REPORT_RELATIVE_PATH,
   convertLegacyVoyage,
   orderCaptureFiles,
+  resolveCaptureSources,
 };

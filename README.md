@@ -85,6 +85,9 @@ npm run convert:legacy-voyage -- /path/to/voyage.zip
 It also accepts an extracted voyage directory. The default output is a new
 `*-canonical.zip`; the source is never changed and an existing output is never
 overwritten. Use `--output /path/to/name.zip` to choose another destination.
+Legacy reference-mode bundles are supported when every exact source path
+declared in `index.captureReferences` still exists. Referenced raw segments are
+read in place and are not copied into the converted ZIP.
 
 The converter:
 
