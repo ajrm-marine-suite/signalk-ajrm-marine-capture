@@ -24,6 +24,7 @@ async function convertLegacyVoyage({
   inputPath,
   outputPath,
   sourcePrefixes = ["YDEN"],
+  allowIncomplete = false,
   convertedAt = new Date().toISOString(),
   onProgress = () => {},
 }) {
@@ -101,6 +102,8 @@ async function convertLegacyVoyage({
           recordsInVoyageWindow: 0,
           canonicalRecords: 0,
           malformedRecords: 0,
+          firstCapturedAt: null,
+          lastCapturedAt: null,
         };
         report.files.push(fileReport);
         await forEachLegacyRecord(capturePath, fileName, async (envelope, lineNumber) => {
@@ -114,6 +117,12 @@ async function convertLegacyVoyage({
           if (!Number.isFinite(rawMs)) {
             fileReport.malformedRecords += 1;
             throw new Error(`${fileName}:${lineNumber} has no valid capturedAt`);
+          }
+          if (!fileReport.firstCapturedAt || rawMs < Date.parse(fileReport.firstCapturedAt)) {
+            fileReport.firstCapturedAt = new Date(rawMs).toISOString();
+          }
+          if (!fileReport.lastCapturedAt || rawMs > Date.parse(fileReport.lastCapturedAt)) {
+            fileReport.lastCapturedAt = new Date(rawMs).toISOString();
           }
           if (rawMs < startedAtMs || rawMs > stoppedAtMs) {
             report.recordsOutsideVoyageWindow += 1;
@@ -151,6 +160,8 @@ async function convertLegacyVoyage({
           report.lastCapturedAt = record.capturedAt;
           report.durationMs = record.elapsedMs;
         });
+        const coverageIssue = captureCoverageIssue(captureSource, fileReport);
+        if (coverageIssue) report.captureCoverageIssues.push(coverageIssue);
         onProgress({
           fileName,
           filesProcessed: report.files.length,
@@ -164,6 +175,12 @@ async function convertLegacyVoyage({
     if (!report.canonicalRecords) {
       throw new Error(`No ${prefixes.join(", ")} physical-input records occur inside the voyage window`);
     }
+    report.coverageComplete = report.captureCoverageIssues.length === 0;
+    if (!report.coverageComplete && !allowIncomplete) {
+      throw new Error(
+        `Legacy capture coverage is incomplete: ${report.captureCoverageIssues.map((entry) => entry.message).join("; ")}. Rerun with --allow-incomplete only for an explicitly partial testing bundle`,
+      );
+    }
 
     report.rawBackwardMs = Math.round(report.rawBackwardMs);
     report.canonicalSha256 = hash.digest("hex");
@@ -174,6 +191,7 @@ async function convertLegacyVoyage({
       records: inspection.records,
       durationMs: inspection.durationMs,
       nondecreasingElapsedMs: true,
+      coverageComplete: report.coverageComplete,
     };
 
     index.canonicalInput = {
@@ -186,16 +204,22 @@ async function convertLegacyVoyage({
       lastElapsedMs: report.durationMs,
       firstCapturedAt: report.firstCapturedAt,
       lastCapturedAt: report.lastCapturedAt,
-      complete: true,
+      complete: report.coverageComplete,
       writeErrors: 0,
       sha256: report.canonicalSha256,
       convertedFromLegacy: true,
+      incompleteReason: report.coverageComplete
+        ? null
+        : "One or more declared legacy capture references have incomplete timestamp coverage",
     };
     index.legacyConversion = publicConversionSummary(report);
     index.hints = [
       ...(Array.isArray(index.hints) ? index.hints : []),
       `${INPUT_RELATIVE_PATH} was generated once from explicitly sourced legacy physical input; see ${REPORT_RELATIVE_PATH}.`,
       "Legacy envelope capturedAt values were clamped to a non-decreasing replay timeline; original delta timestamps and values were not rewritten.",
+      ...(report.coverageComplete ? [] : [
+        "WARNING: legacy conversion used --allow-incomplete because declared raw capture coverage was incomplete. This bundle is suitable only for partial testing and is not complete voyage evidence.",
+      ]),
     ];
     await writeJson(indexPath, index);
     await writeJson(path.join(bundleDirectory, REPORT_RELATIVE_PATH), report);
@@ -240,6 +264,8 @@ function createReport({
     },
     captureFiles,
     files: [],
+    captureCoverageIssues: [],
+    coverageComplete: null,
     recordsRead: 0,
     recordsInVoyageWindow: 0,
     recordsOutsideVoyageWindow: 0,
@@ -269,6 +295,8 @@ function publicConversionSummary(report) {
     rawTimestampRegressions: report.rawTimestampRegressions,
     rawBackwardMs: report.rawBackwardMs,
     validation: report.validation,
+    coverageComplete: report.coverageComplete,
+    captureCoverageIssues: report.captureCoverageIssues,
   };
 }
 
@@ -329,6 +357,7 @@ async function resolveCaptureSources(index, bundleDirectory) {
       filePath: selectedPath,
       kind: "declared-reference",
       fromMs: Date.parse(reference?.from || ""),
+      toMs: Date.parse(reference?.to || ""),
     });
   }
   if (missing.length) {
@@ -342,6 +371,32 @@ async function resolveCaptureSources(index, bundleDirectory) {
     }
     return left.fileName.localeCompare(right.fileName);
   });
+}
+
+function captureCoverageIssue(source, fileReport, toleranceMs = 5000) {
+  if (source.kind !== "declared-reference") return null;
+  const actualFromMs = Date.parse(fileReport.firstCapturedAt || "");
+  const actualToMs = Date.parse(fileReport.lastCapturedAt || "");
+  const missingStartMs = Number.isFinite(source.fromMs) && Number.isFinite(actualFromMs)
+    ? Math.max(0, actualFromMs - source.fromMs)
+    : 0;
+  const missingEndMs = Number.isFinite(source.toMs) && Number.isFinite(actualToMs)
+    ? Math.max(0, source.toMs - actualToMs)
+    : 0;
+  if (missingStartMs <= toleranceMs && missingEndMs <= toleranceMs) return null;
+  const missing = [];
+  if (missingStartMs > toleranceMs) missing.push(`${Math.round(missingStartMs)} ms at start`);
+  if (missingEndMs > toleranceMs) missing.push(`${Math.round(missingEndMs)} ms at end`);
+  return {
+    fileName: source.fileName,
+    declaredFrom: Number.isFinite(source.fromMs) ? new Date(source.fromMs).toISOString() : null,
+    declaredTo: Number.isFinite(source.toMs) ? new Date(source.toMs).toISOString() : null,
+    actualFrom: fileReport.firstCapturedAt,
+    actualTo: fileReport.lastCapturedAt,
+    missingStartMs,
+    missingEndMs,
+    message: `${source.fileName} is missing ${missing.join(" and ")}`,
+  };
 }
 
 function orderCaptureFiles(fileNames, captureIndex) {
@@ -520,6 +575,7 @@ module.exports = {
   CONVERSION_CONTRACT,
   REPORT_RELATIVE_PATH,
   convertLegacyVoyage,
+  captureCoverageIssue,
   orderCaptureFiles,
   resolveCaptureSources,
 };

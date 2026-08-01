@@ -178,6 +178,49 @@ test("legacy converter fails clearly when a declared capture reference is missin
   }
 });
 
+test("truncated reference coverage fails closed unless explicitly allowed", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-legacy-converter-partial-"));
+  const source = path.join(root, "source");
+  const referencedCapture = path.join(root, "partial.jsonl.gz");
+  const output = path.join(root, "converted.zip");
+  await fs.mkdir(source, { recursive: true });
+  await writeGzipLines(referencedCapture, [
+    envelope("2026-07-14T10:00:00.000Z", "YDEN.2", "navigation.headingMagnetic", 2),
+    envelope("2026-07-14T10:00:05.000Z", "YDEN.2", "navigation.headingMagnetic", 2.1),
+  ]);
+  await fs.writeFile(path.join(source, "index.json"), `${JSON.stringify({
+    id: "partial-reference-voyage",
+    startedAt: "2026-07-14T10:00:00.000Z",
+    stoppedAt: "2026-07-14T10:00:20.000Z",
+    captureReferences: [{
+      fileName: "partial.jsonl.gz",
+      sourcePath: referencedCapture,
+      from: "2026-07-14T10:00:00.000Z",
+      to: "2026-07-14T10:00:20.000Z",
+    }],
+  })}\n`);
+  try {
+    await assert.rejects(
+      convertLegacyVoyage({ inputPath: source, outputPath: output }),
+      /Legacy capture coverage is incomplete.*--allow-incomplete/,
+    );
+    const result = await convertLegacyVoyage({
+      inputPath: source,
+      outputPath: output,
+      allowIncomplete: true,
+    });
+    assert.equal(result.coverageComplete, false);
+    assert.equal(result.captureCoverageIssues[0].missingEndMs, 15000);
+    const converted = new AdmZip(output);
+    const index = JSON.parse(converted.readAsText("index.json"));
+    assert.equal(index.canonicalInput.complete, false);
+    assert.match(index.canonicalInput.incompleteReason, /incomplete timestamp coverage/);
+    assert.equal(index.legacyConversion.coverageComplete, false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("capture files use explicit indexed first timestamps when available", () => {
   assert.deepEqual(
     orderCaptureFiles(["later.jsonl.gz", "earlier.jsonl.gz"], {

@@ -15,6 +15,7 @@ async function main(argv) {
     inputPath: options.input,
     outputPath,
     sourcePrefixes: options.sourcePrefixes,
+    allowIncomplete: options.allowIncomplete,
     onProgress(progress) {
       process.stderr.write(
         `Converted ${progress.filesProcessed}/${progress.filesTotal} capture files; ${progress.canonicalRecords} canonical records\n`,
@@ -34,10 +35,11 @@ async function main(argv) {
 }
 
 function parseArguments(argv) {
-  const result = { input: null, output: null, sourcePrefixes: ["YDEN"], help: false };
+  const result = { input: null, output: null, sourcePrefixes: ["YDEN"], allowIncomplete: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--help" || argument === "-h") result.help = true;
+    else if (argument === "--allow-incomplete") result.allowIncomplete = true;
     else if (argument === "--output" || argument === "-o") result.output = requiredValue(argv, ++index, argument);
     else if (argument === "--source-prefix") result.sourcePrefixes.push(requiredValue(argv, ++index, argument));
     else if (argument.startsWith("-")) throw new Error(`Unknown option: ${argument}`);
@@ -63,7 +65,7 @@ function defaultOutputPath(inputPath) {
 }
 
 function usage() {
-  return `Usage: node tools/convert-legacy-voyage.js <voyage.zip|directory> [options]\n\nOptions:\n  -o, --output <file>          Output ZIP (default: <input>-canonical.zip)\n      --source-prefix <prefix> Add a physical source prefix (default: YDEN)\n  -h, --help                   Show this help\n\nThe input is never modified. The output path must not already exist.\n`;
+  return `Usage: node tools/convert-legacy-voyage.js <voyage.zip|directory> [options]\n\nOptions:\n  -o, --output <file>          Output ZIP (default: <input>-canonical.zip)\n      --source-prefix <prefix> Add a physical source prefix (default: YDEN)\n      --allow-incomplete       Create an explicitly partial testing bundle when declared capture coverage is incomplete\n  -h, --help                   Show this help\n\nThe input is never modified. The output path must not already exist.\n`;
 }
 
 main(process.argv.slice(2)).catch((error) => {

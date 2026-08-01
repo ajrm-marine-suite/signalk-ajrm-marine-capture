@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.6
+
+- Validate actual timestamp coverage against each declared legacy capture
+  reference and fail rather than silently certifying a truncated recovery.
+- Add `--allow-incomplete` for deliberately creating a visibly incomplete,
+  partial bundle for testing when damaged legacy tail data cannot be recovered.
+
 ## 0.7.5
 
 - Convert lightweight legacy reference-mode bundles by reading the exact raw

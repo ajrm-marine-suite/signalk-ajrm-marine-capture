@@ -89,6 +89,12 @@ Legacy reference-mode bundles are supported when every exact source path
 declared in `index.captureReferences` still exists. Referenced raw segments are
 read in place and are not copied into the converted ZIP.
 
+The converter checks each referenced file's actual timestamp coverage against
+the range declared in the legacy index. Truncated recovered data fails closed.
+For a deliberately partial testing replay, `--allow-incomplete` creates a
+bundle whose index and conversion report explicitly mark coverage incomplete;
+it must not be treated as complete voyage evidence.
+
 The converter:
 
 - reads only the voyage window explicitly declared by `index.json`;
