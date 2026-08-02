@@ -60,7 +60,9 @@ Important fields include `contract`, `state`, `active`, `requestedRate`,
 `effectiveRatio`, `replayOriginalAt`, `maximumObservedLagMs`, `complete`, and
 `valid`.
 
-After canonical input EOF, press **Stop and build ZIP**. A recomputed voyage is
+At verified canonical input EOF, Capture automatically stops recording and
+builds the ZIP. **Finalise now** remains available as a fallback after verified
+EOF. A recomputed voyage is
 verified only when Capture has both:
 
 - complete canonical-input EOF coverage; and

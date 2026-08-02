@@ -935,7 +935,7 @@ module.exports = function ajrmMarineCapture(app) {
   function assertOrdinaryVoyageCanStop() {
     if (currentVoyage?.recomputedReplay) {
       throw new Error(
-        "Use Stop and build ZIP after Capture reaches verified replay EOF",
+        "Recomputed replay finalises automatically at verified EOF; use Finalise now only as a fallback",
       );
     }
   }
@@ -1206,6 +1206,18 @@ module.exports = function ajrmMarineCapture(app) {
       })
       .finally(() => {
         replayController = null;
+        if (
+          currentVoyage === voyage &&
+          playback.state === "complete" &&
+          playback.complete === true &&
+          playback.valid === true
+        ) {
+          setImmediate(() => {
+            if (currentVoyage !== voyage || stoppingVoyage) return;
+            stopVoyage("verified replay EOF")
+              .catch((error) => logError("automatic replay finalisation failed", error));
+          });
+        }
       });
   }
 

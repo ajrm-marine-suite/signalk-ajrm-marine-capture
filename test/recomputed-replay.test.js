@@ -116,7 +116,7 @@ test("Capture records canonical YDEN input and excludes derived updates", async 
   }
 });
 
-test("Capture replays canonical input at fixed 1x and builds a verified child ZIP", async () => {
+test("Capture replays canonical input at fixed 1x and automatically builds a verified child ZIP at EOF", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-merged-replay-"));
   const voyageDirectory = path.join(root, "voyages");
   await fs.mkdir(voyageDirectory, { recursive: true });
@@ -190,9 +190,22 @@ test("Capture replays canonical input at fixed 1x and builds a verified child ZI
     assert.equal(status.body.playback.valid, true);
     assert.ok(status.body.playback.effectiveRatio >= 0.9);
 
-    const stopped = await invoke(routes, "POST", "/voyage/replay/stop", {});
-    assert.equal(stopped.statusCode, 200);
-    const zip = new AdmZip(stopped.body.bundle.path);
+    await waitFor(async () => {
+      const finalStatus = await invoke(routes, "GET", "/status");
+      if (finalStatus.body.finalisation?.state === "failed") {
+        throw new Error(finalStatus.body.finalisation.error || "Finalisation failed");
+      }
+      return finalStatus.body.finalisation?.state === "complete";
+    });
+    const finalStatus = await invoke(routes, "GET", "/status");
+    assert.equal(finalStatus.body.currentVoyage, null);
+    assert.equal(finalStatus.body.finalisation.recomputationVerified, true);
+    assert.equal(
+      finalStatus.body.recentEvents.some((event) =>
+        event.type === "voyage-stopping" && /verified replay EOF/.test(event.message)),
+      true,
+    );
+    const zip = new AdmZip(finalStatus.body.lastBundle.path);
     const index = JSON.parse(zip.readAsText("index.json"));
     assert.equal(index.incomplete, false);
     assert.equal(index.recomputationVerified, true);

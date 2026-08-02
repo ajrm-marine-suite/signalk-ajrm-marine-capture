@@ -241,7 +241,7 @@ function renderReplayRecorder(status) {
       ? finalisationRunning
         ? "Finalising..."
         : "Starting finalisation..."
-      : "Stop and build ZIP";
+      : "Finalise now";
   elements.interruptReplayCaptureButton.textContent =
     pendingReplayAction === "abort" ? "Interrupting..." : "Interrupt replay";
   renderReplayProgress(status, playback, recomputedActive, replayFinished);

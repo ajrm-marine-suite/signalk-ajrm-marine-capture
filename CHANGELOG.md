@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+- Automatically stop recomputed-output recording and build the voyage ZIP as
+  soon as canonical replay reaches verified EOF.
+- Retain manual finalisation as a fallback after verified EOF.
+
 ## 0.7.6
 
 - Validate actual timestamp coverage against each declared legacy capture
