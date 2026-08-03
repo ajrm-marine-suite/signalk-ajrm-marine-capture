@@ -127,6 +127,13 @@ Voyage bundles may also include timestamped skipper observations, optional
 Snapshot evidence, GPS Integrity DR tracks, DR Plotter fixes, and Console BITE
 reports.
 
+When AJRM Marine Display is installed, Capture also records the explicit route
+that is open at voyage start and subsequent route open, reverse, save and close
+events with voyage elapsed time. Recomputed replay asks Display to restore the
+start route and then applies those route changes at their original source
+times. Route snapshots are voyage metadata; they do not activate the Signal K
+Course API or control an autopilot.
+
 ## Storage and API
 
 The default voyage directory is:

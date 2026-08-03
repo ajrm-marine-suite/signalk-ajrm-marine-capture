@@ -32,6 +32,7 @@ const ENGINE_STATIONARY_THRESHOLD_KNOTS =
   ENGINE_STATIONARY_THRESHOLD_MPS * MPS_TO_KNOTS;
 const AJRM_MARINE_SNAPSHOT_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineSnapshotApi");
 const AJRM_MARINE_CAPTURE_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineCaptureApi");
+const AJRM_MARINE_DISPLAY_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineDisplayApi");
 const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
 const CAPTURE_FILE_MODES = new Set(["portable", "reference"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
@@ -853,6 +854,9 @@ module.exports = function ajrmMarineCapture(app) {
       async observations({ limit = MAX_OBSERVATIONS_RETURNED } = {}) {
         return observationStatus({ limit });
       },
+      async recordRouteSelection(selection) {
+        return recordRouteSelection(selection);
+      },
       async prepareVoyageDownload(fileName) {
         return prepareVoyageDownload(fileName);
       },
@@ -923,6 +927,13 @@ module.exports = function ajrmMarineCapture(app) {
       originalTo: parentIndex.stoppedAt || null,
       originalVoyageStartedAt: parentIndex.startedAt || null,
       timingRequired: true,
+      sourceRouteTimeline: {
+        routeAtStart: parentIndex.routeAtStart || null,
+        selections: Array.isArray(parentIndex.routeSelections)
+          ? parentIndex.routeSelections
+          : [],
+        selectedRoute: parentIndex.selectedRoute || null,
+      },
     };
     const replayComment = normalizeComment(comment) ||
       `Recomputed replay of ${parentVoyage}`;
@@ -969,6 +980,14 @@ module.exports = function ajrmMarineCapture(app) {
         profile: navigationContext.profile,
         harbourName: navigationContext.nearestHarbourName,
       });
+    const routeReplay = startOptions.recomputedReplay?.sourceRouteTimeline || null;
+    let routeRestore = null;
+    if (routeReplay) {
+      routeRestore = await restoreDisplayRoute(routeReplay.routeAtStart || null);
+    }
+    const routeAtStart = routeReplay
+      ? sanitizeRouteSelection(routeReplay.routeAtStart)
+      : await currentDisplayRoute();
     const id = `voyage-${formatFileTime(startedAt)}`;
     const directory = path.join(options.voyageDirectory, id);
     await fs.promises.mkdir(path.join(directory, "snapshots"), { recursive: true });
@@ -1022,6 +1041,23 @@ module.exports = function ajrmMarineCapture(app) {
           }
         : null,
       events: [],
+      routeAtStart,
+      selectedRoute: routeAtStart,
+      routeSelections: routeAtStart
+        ? [{
+            at: startedAt.toISOString(),
+            voyageElapsedMs: 0,
+            action: "active-at-start",
+            selection: routeAtStart,
+          }]
+        : [],
+      routeReplay: routeReplay
+        ? {
+            nextIndex: 0,
+            selections: normalizeRouteTimeline(routeReplay.selections),
+            initialRestore: routeRestore,
+          }
+        : null,
       observations: createObservationLog(),
       drTrack: {
         fileName: DR_TRACK_RELATIVE_PATH,
@@ -1168,6 +1204,7 @@ module.exports = function ajrmMarineCapture(app) {
       onStatus(nextStatus) {
         playback = playbackWithVoyageMetadata(nextStatus);
         voyage.recomputedReplay.timing = playback;
+        applyReplayRouteTimeline(voyage, playback);
         const now = Date.now();
         if (
           playback.state === "complete" ||
@@ -1277,6 +1314,9 @@ module.exports = function ajrmMarineCapture(app) {
       });
       if (voyage.recomputedReplay && replayRunPromise) {
         await replayRunPromise;
+      }
+      if (voyage.routeReplayQueue) {
+        await voyage.routeReplayQueue;
       }
       await closeCanonicalVoyageStreams(voyage);
       const captureStop = {
@@ -2954,6 +2994,9 @@ module.exports = function ajrmMarineCapture(app) {
       captureFiles: voyage.captureFiles || [],
       captureReferences: voyage.captureReferences || [],
       observations: publicObservationLog(voyage.observations),
+      routeAtStart: voyage.routeAtStart || null,
+      selectedRoute: voyage.selectedRoute || null,
+      routeSelections: voyage.routeSelections || [],
       drTrack: voyage.drTrack || null,
       drPlotFixes: voyage.drPlotFixes || null,
       captureIndex,
@@ -3471,6 +3514,123 @@ module.exports = function ajrmMarineCapture(app) {
     clearTimer.unref?.();
   }
 
+  async function recordRouteSelection(selection) {
+    if (!currentVoyage) return { recorded: false, reason: "no-active-voyage" };
+    const normalized = sanitizeRouteSelection(selection);
+    const previous = currentVoyage.selectedRoute;
+    const action = !normalized
+      ? "closed"
+      : previous?.resourceId === normalized.resourceId &&
+          previous?.reversed !== normalized.reversed
+        ? "reversed"
+        : normalized.source === "saved" || normalized.source === "saved-as"
+          ? normalized.source
+          : "opened";
+    const record = {
+      at: new Date().toISOString(),
+      voyageElapsedMs: Math.max(
+        0,
+        Math.round(performance.now() - currentVoyage.monotonicStartedAtMs),
+      ),
+      action,
+      selection: normalized,
+    };
+    currentVoyage.selectedRoute = normalized;
+    currentVoyage.routeSelections = Array.isArray(currentVoyage.routeSelections)
+      ? currentVoyage.routeSelections
+      : [];
+    currentVoyage.routeSelections.push(record);
+    currentVoyage.routeSelections = currentVoyage.routeSelections.slice(-200);
+    appendVoyageEvent(
+      currentVoyage,
+      normalized ? "route-opened" : "route-closed",
+      normalized
+        ? `Opened route ${normalized.resource?.name || normalized.resourceId || "unknown"}`
+        : "Closed the displayed route",
+    );
+    await writeVoyageIndex(currentVoyage);
+    publishState();
+    return { recorded: true, record };
+  }
+
+  async function currentDisplayRoute() {
+    const api = getDisplayApi();
+    if (typeof api?.currentRoute !== "function") return null;
+    try {
+      return sanitizeRouteSelection(await api.currentRoute());
+    } catch (error) {
+      addEvent("route-read-failed", error.message);
+      return null;
+    }
+  }
+
+  async function restoreDisplayRoute(selection) {
+    const api = getDisplayApi();
+    if (typeof api?.restoreRoute !== "function") {
+      return {
+        available: false,
+        restored: false,
+        error: "AJRM Marine Display route API is unavailable",
+      };
+    }
+    try {
+      const restored = await api.restoreRoute(sanitizeRouteSelection(selection));
+      return {
+        available: true,
+        restored: selection ? Boolean(restored) : restored === null,
+        selection: sanitizeRouteSelection(restored),
+      };
+    } catch (error) {
+      addEvent("route-restore-failed", error.message);
+      return { available: true, restored: false, error: error.message };
+    }
+  }
+
+  function getDisplayApi() {
+    return (
+      app.ajrmMarineDisplayApi ||
+      globalThis[AJRM_MARINE_DISPLAY_API_REGISTRY] ||
+      null
+    );
+  }
+
+  function applyReplayRouteTimeline(voyage, replayStatus) {
+    const timeline = voyage?.routeReplay;
+    const elapsedMs = Number(replayStatus?.sourceElapsedMs);
+    if (!timeline || !Number.isFinite(elapsedMs)) return;
+    while (timeline.nextIndex < timeline.selections.length) {
+      const record = timeline.selections[timeline.nextIndex];
+      if (record.voyageElapsedMs > elapsedMs) break;
+      timeline.nextIndex += 1;
+      const selection = record.selection;
+      voyage.routeReplayQueue = (voyage.routeReplayQueue || Promise.resolve())
+        .then(() => restoreDisplayRoute(selection))
+        .then((result) => {
+          voyage.selectedRoute = selection;
+          voyage.routeSelections = Array.isArray(voyage.routeSelections)
+            ? voyage.routeSelections
+            : [];
+          voyage.routeSelections.push({
+            at: new Date().toISOString(),
+            sourceAt: record.at,
+            voyageElapsedMs: record.voyageElapsedMs,
+            action: record.action,
+            selection,
+          });
+          voyage.routeSelections = voyage.routeSelections.slice(-200);
+          appendVoyageEvent(
+            voyage,
+            selection ? "route-replay-opened" : "route-replay-closed",
+            selection
+              ? `Replay opened route ${selection.resource?.name || selection.resourceId || "unknown"}`
+              : "Replay closed the displayed route",
+          );
+          return result;
+        })
+        .catch((error) => logError("route timeline replay failed", error));
+    }
+  }
+
   function summarizeVoyage(voyage) {
     return {
       id: voyage.id,
@@ -3482,6 +3642,9 @@ module.exports = function ajrmMarineCapture(app) {
       captureMode: voyage.captureMode || options.captureMode,
       captureFileMode: voyage.captureFileMode || options.captureFileMode,
       recomputedReplay: voyage.recomputedReplay || null,
+      routeAtStart: voyage.routeAtStart || null,
+      selectedRoute: voyage.selectedRoute || null,
+      routeSelections: voyage.routeSelections || [],
       directory: voyage.directory,
     };
   }
@@ -4434,6 +4597,53 @@ function indexTrafficProjectionSequenceForIndex(summary, valuePath, value) {
   summary.trafficProjectionSequence[sequenceKey] = state;
 }
 
+function sanitizeRouteSelection(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") throw new Error("Route selection must be an object or null");
+  const coordinates = value.resource?.feature?.geometry?.coordinates;
+  if (
+    value.contract !== "ajrm-marine-display-active-route-v1" ||
+    value.resource?.feature?.geometry?.type !== "LineString" ||
+    !Array.isArray(coordinates) ||
+    coordinates.length < 2
+  ) {
+    throw new Error("Route selection does not satisfy the AJRM active-route contract");
+  }
+  for (const point of coordinates) {
+    if (
+      !Array.isArray(point) ||
+      point.length < 2 ||
+      !Number.isFinite(Number(point[0])) ||
+      !Number.isFinite(Number(point[1]))
+    ) {
+      throw new Error("Route selection contains invalid GeoJSON coordinates");
+    }
+  }
+  const json = JSON.stringify(value);
+  if (Buffer.byteLength(json) > 1024 * 1024) {
+    throw new Error("Route selection exceeds the one-megabyte voyage metadata limit");
+  }
+  return JSON.parse(json);
+}
+
+function normalizeRouteTimeline(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(-200)
+    .filter((record) => record?.action !== "active-at-start")
+    .map((record) => ({
+      at: Number.isFinite(Date.parse(record?.at || "")) ? String(record.at) : null,
+      voyageElapsedMs: Math.max(0, Math.round(Number(record?.voyageElapsedMs) || 0)),
+      action: record?.selection
+        ? ["opened", "reversed", "saved", "saved-as"].includes(record?.action)
+          ? record.action
+          : "opened"
+        : "closed",
+      selection: sanitizeRouteSelection(record?.selection),
+    }))
+    .sort((left, right) => left.voyageElapsedMs - right.voyageElapsedMs);
+}
+
 function httpJson(method, url, body) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
@@ -5291,6 +5501,7 @@ module.exports._private = {
   nextMovementGateState,
   normalizeDrPlotFixes,
   normalizeObservationText,
+  normalizeRouteTimeline,
   normalizeTrafficProfile,
   parseObservationRecords,
   publicObservationLog,
@@ -5298,6 +5509,7 @@ module.exports._private = {
   recomputedReplayVerification,
   resetMovementGateForVoyageStart,
   rewritePortableDownloadEvents,
+  sanitizeRouteSelection,
   speedKnotsFromMps,
   writeDirectoryZip,
 };

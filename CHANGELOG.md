@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.8
+
+- Record the AJRM Marine Display route open at voyage start and every later
+  route selection or close with monotonic voyage elapsed time.
+- Restore the recorded start route during recomputed replay and apply later
+  route changes at their corresponding source elapsed times.
+- Keep route restoration display-only and separate from Signal K Course API or
+  autopilot activation.
+
 ## 0.7.7
 
 - Automatically stop recomputed-output recording and build the voyage ZIP as
