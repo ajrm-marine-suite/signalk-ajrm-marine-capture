@@ -17,6 +17,7 @@ const {
   canonicalInputRecord,
 } = require("../plugin/canonical-voyage");
 const { recomputedReplayVerification } = createPlugin._private;
+const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
 
 test("recomputed verification requires canonical EOF and valid timing", () => {
   assert.deepEqual(
@@ -315,6 +316,16 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
         complete: false,
         sourcePrefixes: ["YDEN"],
       },
+      drTrack: {
+        fileName: DR_TRACK_RELATIVE_PATH,
+        samples: 1,
+        writeErrors: 0,
+        startedAt: "2026-08-03T19:08:53.000Z",
+        stoppedAt: null,
+        firstSampleAt: "2026-08-03T19:08:53.100Z",
+        lastSampleAt: "2026-08-03T19:08:53.100Z",
+        lastSampleKey: "stale-checkpoint",
+      },
     }),
   );
   const records = [0, 1000].map((elapsedMs) =>
@@ -336,6 +347,17 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
   await fs.writeFile(
     path.join(workingDirectory, INPUT_RELATIVE_PATH),
     `${completeInput}${tornFragment}`,
+  );
+  const drSamples = [100, 500, 900].map((elapsedMs) => ({
+    ts: new Date(Date.parse("2026-08-03T19:08:53.000Z") + elapsedMs).toISOString(),
+    trust: "normal",
+    gps: { lat: 55.8, lon: -5.7 },
+  }));
+  const completeDrTrack = `${drSamples.map((sample) => JSON.stringify(sample)).join("\n")}\n`;
+  await fs.mkdir(path.join(workingDirectory, "tracks"), { recursive: true });
+  await fs.writeFile(
+    path.join(workingDirectory, DR_TRACK_RELATIVE_PATH),
+    completeDrTrack,
   );
 
   const app = fakeApp();
@@ -360,6 +382,14 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
     assert.equal(index.canonicalInput.lastElapsedMs, 1000);
     assert.equal(index.canonicalInput.truncatedTrailingBytes, Buffer.byteLength(tornFragment));
     assert.equal(zip.readAsText(INPUT_RELATIVE_PATH), completeInput);
+    assert.equal(index.drTrack.samples, 3);
+    assert.equal(index.drTrack.firstSampleAt, drSamples[0].ts);
+    assert.equal(index.drTrack.lastSampleAt, drSamples[2].ts);
+    assert.equal(index.drTrack.stoppedAt, "2026-08-03T19:08:54.000Z");
+    assert.equal(index.drTrack.recoveredAfterRestart, true);
+    assert.equal(index.drTrack.invalidRecords, 0);
+    assert.equal(index.drTrack.lastSampleKey, undefined);
+    assert.equal(zip.readAsText(DR_TRACK_RELATIVE_PATH), completeDrTrack);
     const recovery = JSON.parse(zip.readAsText("system/recovery-status.json"));
     assert.equal(recovery.ok, true);
     assert.match(recovery.note, /recovered the complete canonical records/i);

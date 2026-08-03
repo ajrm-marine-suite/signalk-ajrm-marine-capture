@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.11
+
+- Rebuild DR-track sample counts and first/last timestamps from the durable
+  JSONL file when an interrupted voyage is recovered after a Signal K restart.
+- Close recovered DR metadata at the recovered voyage stop time instead of
+  retaining a stale in-progress checkpoint.
+
 ## 0.7.10
 
 - Sort downloadable voyages by their recorded start time rather than ZIP file

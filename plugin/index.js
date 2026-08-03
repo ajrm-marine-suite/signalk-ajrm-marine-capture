@@ -1740,10 +1740,16 @@ module.exports = function ajrmMarineCapture(app) {
       routeSelections: Array.isArray(existingIndex?.routeSelections)
         ? existingIndex.routeSelections
         : [],
-      drTrack: existingIndex?.drTrack || null,
+      drTrack: null,
       recoveredAt: now,
       interruptedByRestart: true,
     };
+    voyage.drTrack = await recoverDrTrackState(
+      directory,
+      existingIndex?.drTrack,
+      voyage.startedAt,
+      voyage.stoppedAt,
+    );
     if (completedRecomputation) {
       const recomputationVerified =
         completedRecomputation.recomputationVerified === true;
@@ -1960,6 +1966,106 @@ module.exports = function ajrmMarineCapture(app) {
       closedAt: new Date().toISOString(),
       complete: true,
       recoveredAfterRestart: true,
+      truncatedTrailingBytes,
+    };
+  }
+
+  async function recoverDrTrackState(
+    directory,
+    existingState,
+    startedAt,
+    stoppedAt,
+  ) {
+    const filePath = path.join(directory, DR_TRACK_RELATIVE_PATH);
+    let fileInfo = await fs.promises.stat(filePath).catch(() => null);
+    const writeErrors = Number(existingState?.writeErrors) || 0;
+    if (!fileInfo?.isFile()) {
+      return existingState
+        ? {
+            fileName: DR_TRACK_RELATIVE_PATH,
+            samples: 0,
+            writeErrors,
+            startedAt: existingState.startedAt || startedAt || null,
+            stoppedAt: stoppedAt || null,
+            firstSampleAt: null,
+            lastSampleAt: null,
+            recoveredAfterRestart: true,
+            sourceAvailable: false,
+          }
+        : null;
+    }
+
+    let fileEndsWithLineBreak = false;
+    if (fileInfo.size > 0) {
+      const handle = await fs.promises.open(filePath, "r");
+      try {
+        const finalByte = Buffer.alloc(1);
+        await handle.read(finalByte, 0, 1, fileInfo.size - 1);
+        fileEndsWithLineBreak = finalByte[0] === 10 || finalByte[0] === 13;
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const input = fs.createReadStream(filePath);
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    let samples = 0;
+    let invalidRecords = 0;
+    let offset = 0;
+    let firstSampleAt = null;
+    let lastSampleAt = null;
+    let finalInvalid = null;
+
+    for await (const line of lines) {
+      const lineBytes = Buffer.byteLength(line) + 1;
+      finalInvalid = null;
+      if (!line) {
+        offset += lineBytes;
+        continue;
+      }
+      try {
+        const sample = JSON.parse(line);
+        if (
+          !sample ||
+          typeof sample !== "object" ||
+          !normalizeIsoTimestamp(sample.ts)
+        ) {
+          throw new Error("record does not contain a valid DR sample timestamp");
+        }
+        samples += 1;
+        if (!firstSampleAt) firstSampleAt = sample.ts;
+        lastSampleAt = sample.ts;
+      } catch (error) {
+        invalidRecords += 1;
+        finalInvalid = {
+          offset,
+          error,
+          recoverableTrailingFragment:
+            error instanceof SyntaxError && !fileEndsWithLineBreak,
+        };
+      }
+      offset += lineBytes;
+    }
+
+    let truncatedTrailingBytes = 0;
+    if (finalInvalid?.recoverableTrailingFragment) {
+      truncatedTrailingBytes = Math.max(0, fileInfo.size - finalInvalid.offset);
+      await fs.promises.truncate(filePath, finalInvalid.offset);
+      fileInfo = await fs.promises.stat(filePath);
+      invalidRecords -= 1;
+    }
+
+    return {
+      fileName: DR_TRACK_RELATIVE_PATH,
+      samples,
+      bytes: fileInfo.size,
+      writeErrors,
+      startedAt: existingState?.startedAt || startedAt || firstSampleAt,
+      stoppedAt: stoppedAt || lastSampleAt,
+      firstSampleAt,
+      lastSampleAt,
+      recoveredAfterRestart: true,
+      invalidRecords,
       truncatedTrailingBytes,
     };
   }
