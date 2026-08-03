@@ -4823,7 +4823,24 @@ async function listVoyageBundlesInDirectory(directory) {
       downloadUrl: `/plugins/signalk-ajrm-marine-capture/voyages/${encodeURIComponent(entry.name)}/download`,
     });
   }
-  return result.sort((left, right) => String(right.modifiedAt).localeCompare(String(left.modifiedAt)));
+  return result.sort(compareVoyageBundlesNewestFirst);
+}
+
+function compareVoyageBundlesNewestFirst(left, right) {
+  const leftVoyageTime = Date.parse(left?.startedAt || "");
+  const rightVoyageTime = Date.parse(right?.startedAt || "");
+  if (Number.isFinite(leftVoyageTime) && Number.isFinite(rightVoyageTime)) {
+    if (leftVoyageTime !== rightVoyageTime) return rightVoyageTime - leftVoyageTime;
+  } else if (Number.isFinite(leftVoyageTime)) {
+    return -1;
+  } else if (Number.isFinite(rightVoyageTime)) {
+    return 1;
+  }
+  const modifiedOrder = String(right?.modifiedAt || "").localeCompare(
+    String(left?.modifiedAt || ""),
+  );
+  if (modifiedOrder !== 0) return modifiedOrder;
+  return String(right?.fileName || "").localeCompare(String(left?.fileName || ""));
 }
 
 async function cachedVoyageZipIndex(filePath, info) {
@@ -5608,6 +5625,7 @@ module.exports._private = {
   biteReportOverlapsVoyage,
   cleanHarbourName,
   cleanupPortableDownloadWorkspaces,
+  compareVoyageBundlesNewestFirst,
   defaultVoyageComment,
   drTrackSample,
   filterDrPlotFixesForVoyage,

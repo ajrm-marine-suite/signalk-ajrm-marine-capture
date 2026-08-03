@@ -7,6 +7,7 @@ const createPlugin = require("../plugin");
 const source = fs.readFileSync(path.join(__dirname, "..", "plugin", "index.js"), "utf8");
 const {
   biteReportOverlapsVoyage,
+  compareVoyageBundlesNewestFirst,
 } = createPlugin._private;
 
 test("Capture bundles voyage-window Console BITE reports for offline debugging", () => {
@@ -28,6 +29,23 @@ test("startup automatically recovers interrupted canonical voyages", () => {
   assert.match(
     source,
     /cleanupPortableDownloadWorkspacesOnStartup\(\),\s*closeIncompleteVoyagesOnStartup\(\)/s,
+  );
+});
+
+test("voyage list sorts by voyage start rather than ZIP recovery time", () => {
+  const naturallyCompleted = {
+    fileName: "voyage-20260803T190853Z.zip",
+    startedAt: "2026-08-03T19:08:53.750Z",
+    modifiedAt: "2026-08-03T19:27:55.000Z",
+  };
+  const olderRecovered = {
+    fileName: "voyage-20260731T192455Z.zip",
+    startedAt: "2026-07-31T19:24:55.000Z",
+    modifiedAt: "2026-08-03T19:35:21.000Z",
+  };
+  assert.deepEqual(
+    [olderRecovered, naturallyCompleted].sort(compareVoyageBundlesNewestFirst),
+    [naturallyCompleted, olderRecovered],
   );
 });
 

@@ -3,7 +3,7 @@
 > **Alpha software:** this software has not been validated for navigation or
 > safety and must not be relied upon for either purpose.
 
-AJRM Marine Capture v0.7.9 is the single AJRM Marine voyage recorder, replay
+AJRM Marine Capture v0.7.10 is the single AJRM Marine voyage recorder, replay
 engine, evidence collector, and ZIP builder. It replaces AJRM Marine Logger.
 
 ## The simple data model

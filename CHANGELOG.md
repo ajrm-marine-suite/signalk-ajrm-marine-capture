@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.10
+
+- Sort downloadable voyages by their recorded start time rather than ZIP file
+  modification time, so startup-recovered historical bundles do not obscure a
+  more recent naturally completed voyage.
+
 ## 0.7.9
 
 - Restore automatic startup recovery for ordinary voyages interrupted by a
