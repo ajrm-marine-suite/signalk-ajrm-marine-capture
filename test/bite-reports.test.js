@@ -20,12 +20,14 @@ test("Capture bundles voyage-window Console BITE reports for offline debugging",
   assert.match(source, /bite-reports-none/);
 });
 
-test("startup retains interrupted working directories without legacy reconstruction", () => {
-  assert.match(source, /async function reportInterruptedVoyageDirectories/);
-  assert.match(source, /retained for manual inspection/);
+test("startup automatically recovers interrupted canonical voyages", () => {
+  assert.match(source, /async function closeIncompleteVoyagesOnStartup/);
+  assert.match(source, /async function recoverCanonicalInputState/);
+  assert.match(source, /recoveredAfterRestart: true/);
+  assert.match(source, /truncatedTrailingBytes/);
   assert.match(
     source,
-    /cleanupPortableDownloadWorkspacesOnStartup\(\),\s*reportInterruptedVoyageDirectories\(\)/s,
+    /cleanupPortableDownloadWorkspacesOnStartup\(\),\s*closeIncompleteVoyagesOnStartup\(\)/s,
   );
 });
 

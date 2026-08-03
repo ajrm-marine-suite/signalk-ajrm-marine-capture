@@ -223,7 +223,7 @@ module.exports = function ajrmMarineCapture(app) {
     exposeCaptureApi();
     startupRecoveryPromise = Promise.all([
       cleanupPortableDownloadWorkspacesOnStartup(),
-      reportInterruptedVoyageDirectories(),
+      closeIncompleteVoyagesOnStartup(),
     ]).catch((error) => {
       logError("startup recovery failed", error);
     });
@@ -1684,11 +1684,16 @@ module.exports = function ajrmMarineCapture(app) {
       completionCheckpoint,
       existingIndex,
     );
+    const canonicalInput = existingIndex?.recomputedReplay
+      ? existingIndex?.canonicalInput || null
+      : await recoverCanonicalInputState(directory, existingIndex?.canonicalInput);
     const voyage = {
       id,
       directory,
       startedAt: existingIndex?.startedAt || startedAtFromVoyageId(id) || now,
-      stoppedAt: now,
+      stoppedAt: existingIndex?.recomputedReplay
+        ? now
+        : canonicalInput?.lastCapturedAt || now,
       reason: existingIndex?.startReason || "recovered incomplete voyage",
       stopReason: "Signal K restarted before AJRM Marine Capture stopped this voyage",
       comment: normalizeComment(existingIndex?.comment),
@@ -1700,6 +1705,11 @@ module.exports = function ajrmMarineCapture(app) {
         ? existingIndex.captureFileMode
         : "reference",
       recomputedReplay: existingIndex?.recomputedReplay || null,
+      canonicalInput,
+      recomputedOutput:
+        completedRecomputation?.result?.output ||
+        existingIndex?.recomputedOutput ||
+        null,
       ajrmMarineLogger: existingIndex?.ajrmMarineLogger?.start || null,
       captureStop: completedRecomputation
         ? {
@@ -1725,6 +1735,12 @@ module.exports = function ajrmMarineCapture(app) {
         existingIndex?.observations,
       ),
       events: Array.isArray(existingIndex?.events) ? existingIndex.events.slice(0, 200) : [],
+      routeAtStart: existingIndex?.routeAtStart || null,
+      selectedRoute: existingIndex?.selectedRoute || null,
+      routeSelections: Array.isArray(existingIndex?.routeSelections)
+        ? existingIndex.routeSelections
+        : [],
+      drTrack: existingIndex?.drTrack || null,
       recoveredAt: now,
       interruptedByRestart: true,
     };
@@ -1796,18 +1812,12 @@ module.exports = function ajrmMarineCapture(app) {
         : "Packaging interrupted voyage evidence",
     });
     appendVoyageEvent(voyage, "recovered", "Voyage closed at startup after Signal K restart");
-    if (voyage.recomputedReplay && !completedRecomputation) {
-      await copyIncompleteRecomputedCaptureFiles(voyage, voyage.captureStop);
-    } else {
-      await copyCaptureFiles(voyage, voyage.captureStop);
-    }
-    if (!voyage.captureFiles.length && !voyage.captureReferences.length) {
-      appendVoyageEvent(
-        voyage,
-        "capture-reference-warning",
-        "No AJRM Marine Logger segments matched the recovered voyage range",
-      );
-    }
+    // Since v0.7 Capture owns both canonical input and recomputed output in the
+    // voyage working directory. Startup recovery must package those durable
+    // files in place; there is no separate Logger process to query or wait for.
+    voyage.captureFiles = await listCaptureFileNames(
+      path.join(directory, "capture"),
+    );
     await copyDrPlotFixes(voyage);
     await copyConsoleBiteReports(voyage);
     await writeJson(path.join(directory, "system", "recovery-status.json"), {
@@ -1822,9 +1832,11 @@ module.exports = function ajrmMarineCapture(app) {
       captureFiles: voyage.captureFiles,
       note: completedRecomputation
         ? completedRecomputation.recomputationVerified === true
-          ? "Logger had already completed and verified the recomputed replay. Capture resumed only the later evidence and ZIP finalisation work."
-          : "Logger had completed the replay, but live-input isolation was not verified. Capture resumed ZIP finalisation without certifying the recomputation."
-        : "This voyage was not resumed because Signal K was stopped or restarted before normal voyage shutdown.",
+          ? "Capture had already completed and verified the recomputed replay. Startup recovery resumed only the later evidence and ZIP finalisation work."
+          : "Capture had completed the replay without verification. Startup recovery resumed ZIP finalisation without certifying the recomputation."
+        : voyage.recomputedReplay
+          ? "Capture packaged the interrupted recomputed replay as incomplete, unverified evidence."
+          : "Capture recovered the complete canonical records present on disk and packaged the interrupted ordinary voyage automatically.",
     });
     const index = await writeVoyageIndex(voyage);
     updateFinalisation("building-zip", {
@@ -1840,15 +1852,116 @@ module.exports = function ajrmMarineCapture(app) {
       "voyage-recovered",
       completedRecomputation
         ? `${id}: completed ZIP finalisation recovered after startup`
-        : `${id}: closed incomplete voyage after startup`,
+        : voyage.recomputedReplay
+          ? `${id}: incomplete replay evidence packaged after startup`
+          : `${id}: ordinary voyage recovered and packaged after startup`,
     );
     logInfo(
       completedRecomputation
         ? `${id} completed ZIP finalisation recovered after startup`
-        : `${id} closed as incomplete voyage after startup`,
+        : voyage.recomputedReplay
+          ? `${id} incomplete replay evidence packaged after startup`
+          : `${id} ordinary voyage recovered and packaged after startup`,
     );
     publishState();
     return bundle;
+  }
+
+  async function recoverCanonicalInputState(directory, existingState) {
+    const filePath = path.join(directory, INPUT_RELATIVE_PATH);
+    let fileInfo = await fs.promises.stat(filePath).catch(() => null);
+    if (!fileInfo?.isFile()) {
+      throw new Error(`Interrupted voyage has no ${INPUT_RELATIVE_PATH}`);
+    }
+    let fileEndsWithLineBreak = false;
+    if (fileInfo.size > 0) {
+      const handle = await fs.promises.open(filePath, "r");
+      try {
+        const finalByte = Buffer.alloc(1);
+        await handle.read(finalByte, 0, 1, fileInfo.size - 1);
+        fileEndsWithLineBreak = finalByte[0] === 10 || finalByte[0] === 13;
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const input = fs.createReadStream(filePath);
+    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    let records = 0;
+    let offset = 0;
+    let lastElapsedMs = 0;
+    let firstCapturedAt = null;
+    let lastCapturedAt = null;
+    let pendingInvalid = null;
+
+    for await (const line of lines) {
+      if (pendingInvalid) {
+        throw new Error(
+          `Invalid canonical input before EOF at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
+        );
+      }
+      const lineBytes = Buffer.byteLength(line) + 1;
+      if (!line) {
+        offset += lineBytes;
+        continue;
+      }
+      try {
+        const record = JSON.parse(line);
+        if (
+          record?.contract !== INPUT_CONTRACT ||
+          record?.schemaVersion !== 1 ||
+          !Number.isFinite(record?.elapsedMs) ||
+          record.elapsedMs < lastElapsedMs ||
+          !Array.isArray(record?.delta?.updates) ||
+          record.delta.updates.length === 0
+        ) {
+          throw new Error("record does not satisfy the canonical input contract");
+        }
+        records += 1;
+        lastElapsedMs = record.elapsedMs;
+        if (!firstCapturedAt) firstCapturedAt = record.capturedAt || null;
+        lastCapturedAt = record.capturedAt || lastCapturedAt;
+      } catch (error) {
+        pendingInvalid = {
+          offset,
+          error,
+          recoverableTrailingFragment:
+            error instanceof SyntaxError && !fileEndsWithLineBreak,
+        };
+      }
+      offset += lineBytes;
+    }
+
+    let truncatedTrailingBytes = 0;
+    if (pendingInvalid) {
+      if (!pendingInvalid.recoverableTrailingFragment) {
+        throw new Error(
+          `Invalid final canonical input record at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
+        );
+      }
+      truncatedTrailingBytes = Math.max(0, fileInfo.size - pendingInvalid.offset);
+      await fs.promises.truncate(filePath, pendingInvalid.offset);
+      fileInfo = await fs.promises.stat(filePath);
+    }
+
+    return {
+      contract: INPUT_CONTRACT,
+      schemaVersion: 1,
+      fileName: INPUT_RELATIVE_PATH,
+      sourcePrefixes: Array.isArray(existingState?.sourcePrefixes)
+        ? existingState.sourcePrefixes
+        : options.inputSourcePrefixes,
+      records,
+      bytes: fileInfo.size,
+      lastElapsedMs,
+      writeErrors: Number(existingState?.writeErrors) || 0,
+      firstCapturedAt,
+      lastCapturedAt,
+      closedAt: new Date().toISOString(),
+      complete: true,
+      recoveredAfterRestart: true,
+      truncatedTrailingBytes,
+    };
   }
 
   function completedRecomputedCompletion(

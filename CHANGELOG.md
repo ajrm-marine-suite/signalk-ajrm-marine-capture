@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.9
+
+- Restore automatic startup recovery for ordinary voyages interrupted by a
+  Signal K restart or Pi shutdown.
+- Rebuild canonical-input metadata from the durable JSONL file and package all
+  complete records without depending on a browser or the retired Logger.
+- Discard only a torn final JSON fragment; fail closed on internal or
+  structurally invalid canonical data and retain it for inspection.
+
 ## 0.7.8
 
 - Record the AJRM Marine Display route open at voyage start and every later

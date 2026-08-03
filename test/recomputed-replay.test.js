@@ -292,6 +292,83 @@ test("failed canonical extraction rolls back the child voyage transaction", asyn
   }
 });
 
+test("startup recovers an interrupted ordinary voyage and trims only a torn final record", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-startup-recovery-"));
+  const voyageDirectory = path.join(root, "voyages");
+  const voyageId = "voyage-20260803T190853Z";
+  const workingDirectory = path.join(voyageDirectory, voyageId);
+  await fs.mkdir(path.join(workingDirectory, "input"), { recursive: true });
+  await fs.writeFile(
+    path.join(workingDirectory, "index.json"),
+    JSON.stringify({
+      id: voyageId,
+      startedAt: "2026-08-03T19:08:53.000Z",
+      startReason: "movement detected",
+      captureMode: "minimal",
+      captureFileMode: "portable",
+      canonicalInput: {
+        contract: INPUT_CONTRACT,
+        schemaVersion: 1,
+        fileName: INPUT_RELATIVE_PATH,
+        records: 1,
+        bytes: 1,
+        complete: false,
+        sourcePrefixes: ["YDEN"],
+      },
+    }),
+  );
+  const records = [0, 1000].map((elapsedMs) =>
+    canonicalInputRecord({
+      elapsedMs,
+      capturedAt: new Date(Date.parse("2026-08-03T19:08:53.000Z") + elapsedMs).toISOString(),
+      delta: {
+        context: "vessels.self",
+        updates: [{
+          $source: "YDEN.2",
+          timestamp: "2026-08-03T19:08:53.000Z",
+          values: [{ path: "navigation.speedOverGround", value: 1.2 }],
+        }],
+      },
+    }),
+  );
+  const completeInput = `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+  const tornFragment = '{"contract":"ajrm-marine-canonical-input-v1"';
+  await fs.writeFile(
+    path.join(workingDirectory, INPUT_RELATIVE_PATH),
+    `${completeInput}${tornFragment}`,
+  );
+
+  const app = fakeApp();
+  const plugin = createPlugin(app);
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    captureMode: "minimal",
+    deleteWorkingDirectoryAfterZip: false,
+  });
+
+  try {
+    const zipPath = path.join(voyageDirectory, `${voyageId}.zip`);
+    await waitFor(async () => fs.stat(zipPath).then(() => true, () => false));
+    const zip = new AdmZip(zipPath);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.interruptedByRestart, true);
+    assert.equal(index.stoppedAt, "2026-08-03T19:08:54.000Z");
+    assert.equal(index.canonicalInput.complete, true);
+    assert.equal(index.canonicalInput.recoveredAfterRestart, true);
+    assert.equal(index.canonicalInput.records, 2);
+    assert.equal(index.canonicalInput.lastElapsedMs, 1000);
+    assert.equal(index.canonicalInput.truncatedTrailingBytes, Buffer.byteLength(tornFragment));
+    assert.equal(zip.readAsText(INPUT_RELATIVE_PATH), completeInput);
+    const recovery = JSON.parse(zip.readAsText("system/recovery-status.json"));
+    assert.equal(recovery.ok, true);
+    assert.match(recovery.note, /recovered the complete canonical records/i);
+  } finally {
+    plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 function fakeApp({ echoHandledDeltas = false } = {}) {
   const signalk = new EventEmitter();
   return {

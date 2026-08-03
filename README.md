@@ -3,7 +3,7 @@
 > **Alpha software:** this software has not been validated for navigation or
 > safety and must not be relied upon for either purpose.
 
-AJRM Marine Capture v0.7.0 is the single AJRM Marine voyage recorder, replay
+AJRM Marine Capture v0.7.9 is the single AJRM Marine voyage recorder, replay
 engine, evidence collector, and ZIP builder. It replaces AJRM Marine Logger.
 
 ## The simple data model
@@ -126,6 +126,15 @@ manually from its web page. Diagnostic modes control Snapshot collection:
 Voyage bundles may also include timestamped skipper observations, optional
 Snapshot evidence, GPS Integrity DR tracks, DR Plotter fixes, and Console BITE
 reports.
+
+If Signal K or the Pi stops before a voyage has been finalised, Capture
+automatically recovers the unzipped voyage working directory on its next
+start. It validates the canonical input from disk, rebuilds its metadata and
+creates the voyage ZIP. A torn final JSONL fragment caused by interruption
+during a write is discarded; complete records are retained, while corruption
+anywhere else fails closed and leaves the working directory for inspection.
+Waiting for the completed ZIP before an intentional shutdown is still the
+preferred clean-stop procedure.
 
 When AJRM Marine Display is installed, Capture also records the explicit route
 that is open at voyage start and subsequent route open, reverse, save and close
