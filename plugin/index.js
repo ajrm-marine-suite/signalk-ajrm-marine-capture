@@ -5308,7 +5308,7 @@ async function listFiles(root) {
       } else if (entry.isFile()) {
         const info = await fs.promises.stat(fullPath).catch(() => null);
         result.push({
-          path: relative,
+          path: relative.split(path.sep).join("/"),
           bytes: info?.size || 0,
           modifiedAt: info ? new Date(info.mtimeMs).toISOString() : null,
         });

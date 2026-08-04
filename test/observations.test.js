@@ -195,6 +195,11 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
       .filter((entry) => !entry.isDirectory && entry.entryName !== "index.json");
     assert.equal(index.files.length, zipPayloadEntries.length);
     for (const declared of index.files) {
+      assert.equal(
+        declared.path.includes("\\"),
+        false,
+        `Declared payload path must use portable separators: ${declared.path}`,
+      );
       const entry = zip.getEntry(declared.path);
       assert.ok(entry, `Declared payload ${declared.path} must exist in the ZIP`);
       assert.equal(

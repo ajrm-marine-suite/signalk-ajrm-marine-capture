@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.14
+
+- Store payload inventory paths with portable ZIP separators on every platform,
+  including Windows, and verify that contract in the completed-bundle test.
+
 ## 0.7.13
 
 - Exclude the root `index.json` from its own payload inventory and declare that
