@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.13
+
+- Exclude the root `index.json` from its own payload inventory and declare that
+  rule explicitly with the versioned `ajrm-marine-voyage-payload-inventory-v1`
+  contract, preventing stale self-referential byte counts.
+- Verify in tests that every declared payload exists in the completed ZIP and
+  has exactly the declared uncompressed size.
+
 ## 0.7.12
 
 - Record the explicit Signal K own-vessel context in each voyage index so

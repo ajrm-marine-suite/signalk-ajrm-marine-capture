@@ -3178,7 +3178,8 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function writeVoyageIndex(voyage) {
-    const files = await listFiles(voyage.directory);
+    const files = (await listFiles(voyage.directory))
+      .filter((entry) => entry.path !== "index.json");
     const captureIndex = await buildCaptureIndex(voyage);
     const index = {
       id: voyage.id,
@@ -3213,6 +3214,13 @@ module.exports = function ajrmMarineCapture(app) {
       drTrack: voyage.drTrack || null,
       captureIndex,
       events: voyage.events,
+      fileInventory: {
+        contract: "ajrm-marine-voyage-payload-inventory-v1",
+        contractVersion: 1,
+        excludes: ["index.json"],
+        reason:
+          "The root manifest is excluded because it cannot reliably declare its own final size and modification time.",
+      },
       files,
       hints: [
         "Start with index.json.",

@@ -180,6 +180,29 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
     const zip = new AdmZip(stopped.body.bundle.path);
     const index = JSON.parse(zip.readAsText("index.json"));
     assert.equal(index.ownContext, "vessels.urn:mrn:imo:mmsi:235008635");
+    assert.equal(
+      index.fileInventory.contract,
+      "ajrm-marine-voyage-payload-inventory-v1",
+    );
+    assert.deepEqual(index.fileInventory.excludes, ["index.json"]);
+    assert.equal(
+      index.files.some((entry) => entry.path === "index.json"),
+      false,
+      "The root manifest must not carry a stale self-referential size",
+    );
+    const zipPayloadEntries = zip
+      .getEntries()
+      .filter((entry) => !entry.isDirectory && entry.entryName !== "index.json");
+    assert.equal(index.files.length, zipPayloadEntries.length);
+    for (const declared of index.files) {
+      const entry = zip.getEntry(declared.path);
+      assert.ok(entry, `Declared payload ${declared.path} must exist in the ZIP`);
+      assert.equal(
+        declared.bytes,
+        entry.header.size,
+        `Declared payload size must match ${declared.path}`,
+      );
+    }
     assert.equal(index.observations.count, 3);
     assert.equal(index.observations.evidenceCount, 1);
     assert.equal(index.observations.evidenceErrorCount, 1);

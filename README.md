@@ -125,6 +125,10 @@ manually from its web page. Diagnostic modes control Snapshot collection:
 
 Voyage bundles may also include timestamped skipper observations, optional
 Snapshot evidence, GPS Integrity DR tracks, and Console BITE reports.
+The root `index.json` declares a versioned payload inventory in `files`.
+`index.json` itself is explicitly excluded because a manifest cannot reliably
+declare its own final byte size and modification time; every listed payload is
+checked against the completed ZIP in Capture's tests.
 
 If Signal K or the Pi stops before a voyage has been finalised, Capture
 automatically recovers the unzipped voyage working directory on its next
