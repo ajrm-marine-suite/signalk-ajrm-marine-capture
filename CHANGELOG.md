@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.12
+
+- Record the explicit Signal K own-vessel context in each voyage index so
+  downstream review never has to identify own vessel by sample volume.
+- Remove the retired AJRM Marine DR Plotter file dependency and plot-fix bundle
+  metadata; the maintained GPS Integrity DR track remains unchanged.
+- Correct the packaged web-app icon path.
+
 ## 0.7.11
 
 - Rebuild DR-track sample counts and first/last timestamps from the durable

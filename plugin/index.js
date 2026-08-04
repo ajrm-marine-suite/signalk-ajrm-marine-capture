@@ -42,7 +42,6 @@ const AJRM_MARINE_TRAFFIC_PROFILES_PATH = "plugins.ajrmMarineTraffic.profiles";
 const AJRM_MARINE_TRAFFIC_AUTO_PROFILE_PATH = "plugins.ajrmMarineTraffic.autoProfile";
 const AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH = "plugins.ajrmMarineTraffic.voyageState";
 const DR_TRACK_RELATIVE_PATH = "tracks/dr-track.jsonl";
-const DR_PLOT_FIXES_RELATIVE_PATH = "tracks/dr-plot-fixes.json";
 const OBSERVATIONS_RELATIVE_PATH = "observations/observations.jsonl";
 const OBSERVATION_EVIDENCE_DIRECTORY = "observations/evidence";
 const PARENT_OBSERVATIONS_RELATIVE_PATH =
@@ -58,13 +57,6 @@ const PORTABLE_DOWNLOAD_DIRECTORY_PREFIX = "ajrm-marine-voyage-download-";
 const PORTABLE_DOWNLOAD_STAGING_DIRECTORY = ".portable-download-work";
 const voyageBundleMetadataCache = new Map();
 const voyageBundleMetadataJobs = new Map();
-const DR_PLOTTER_FIXES_FILE = path.join(
-  os.homedir(),
-  ".signalk",
-  "plugin-config-data",
-  "signalk-ajrm-marine-dr-plotter",
-  "plot-fixes.json",
-);
 const CONSOLE_BITE_REPORTS_DIRECTORY = path.join(
   os.homedir(),
   ".signalk",
@@ -1011,6 +1003,7 @@ module.exports = function ajrmMarineCapture(app) {
       startedAt: startedAt.toISOString(),
       reason,
       comment,
+      ownContext: normalizeOwnContext(app.selfId || app.selfContext || app.self),
       snapshotCount: 0,
       captureMode: startOptions.recomputedReplay ? "voyage" : options.captureMode,
       captureFileMode: "portable",
@@ -1385,7 +1378,6 @@ module.exports = function ajrmMarineCapture(app) {
         message: "Collecting voyage evidence",
       });
       await closeDrTrack(voyage, stoppedAt);
-      await copyDrPlotFixes(voyage);
       await copyConsoleBiteReports(voyage);
       await cleanupReplayWork(voyage);
       updateFinalisation("indexing", {
@@ -1599,7 +1591,6 @@ module.exports = function ajrmMarineCapture(app) {
         result: replayResult,
       };
       await closeDrTrack(voyage, stoppedAt);
-      await copyDrPlotFixes(voyage);
       await copyConsoleBiteReports(voyage);
       await cleanupReplayWork(voyage);
       await writeJson(
@@ -1697,6 +1688,9 @@ module.exports = function ajrmMarineCapture(app) {
       reason: existingIndex?.startReason || "recovered incomplete voyage",
       stopReason: "Signal K restarted before AJRM Marine Capture stopped this voyage",
       comment: normalizeComment(existingIndex?.comment),
+      ownContext:
+        normalizeOwnContext(existingIndex?.ownContext) ||
+        normalizeOwnContext(app.selfId || app.selfContext || app.self),
       snapshotCount: await countFiles(path.join(directory, "snapshots"), ".json"),
       captureMode: CAPTURE_MODES.has(existingIndex?.captureMode)
         ? existingIndex.captureMode
@@ -1824,7 +1818,6 @@ module.exports = function ajrmMarineCapture(app) {
     voyage.captureFiles = await listCaptureFileNames(
       path.join(directory, "capture"),
     );
-    await copyDrPlotFixes(voyage);
     await copyConsoleBiteReports(voyage);
     await writeJson(path.join(directory, "system", "recovery-status.json"), {
       ok: true,
@@ -3194,6 +3187,7 @@ module.exports = function ajrmMarineCapture(app) {
       startedAt: voyage.startedAt,
       stoppedAt: voyage.stoppedAt,
       comment: voyage.comment || "",
+      ownContext: voyage.ownContext || null,
       startReason: voyage.reason,
       stopReason: voyage.stopReason,
       snapshotCount: voyage.snapshotCount,
@@ -3217,7 +3211,6 @@ module.exports = function ajrmMarineCapture(app) {
       selectedRoute: voyage.selectedRoute || null,
       routeSelections: voyage.routeSelections || [],
       drTrack: voyage.drTrack || null,
-      drPlotFixes: voyage.drPlotFixes || null,
       captureIndex,
       events: voyage.events,
       files,
@@ -3227,7 +3220,6 @@ module.exports = function ajrmMarineCapture(app) {
         `Read ${OBSERVATIONS_RELATIVE_PATH} for timestamped skipper observations; optional structured Snapshot evidence is referenced from each observation.`,
         `For a recomputed child, ${PARENT_OBSERVATIONS_RELATIVE_PATH} is lineage copied from the parent and is not counted as a child observation. Verified parent Snapshot evidence stays in the named parent voyage and lineage records contain no dangling child paths.`,
         "Use snapshot timestamps and capture metadata to locate interesting intervals.",
-        "Use tracks/dr-plot-fixes.json for navigator-style timed, manual, observed, GPS-lost, and GPS-return DR plot fixes when present.",
         `${INPUT_RELATIVE_PATH} is the only replayable input and contains explicitly sourced physical updates on one monotonic elapsedMs timeline.`,
         `${RECOMPUTED_OUTPUT_RELATIVE_PATH} is output evidence only and must never be replayed as physical input.`,
         voyage.recomputedReplay?.incomplete === true
@@ -3938,40 +3930,6 @@ module.exports = function ajrmMarineCapture(app) {
     await new Promise((resolve) => stream.end(resolve));
   }
 
-  async function copyDrPlotFixes(voyage) {
-    if (!voyage?.directory) return;
-    const source = await readJson(DR_PLOTTER_FIXES_FILE);
-    const allFixes = normalizeDrPlotFixes(source?.plotFixes || source?.fixes || []);
-    const voyageFixes = filterDrPlotFixesForVoyage(allFixes, voyage.startedAt, voyage.stoppedAt);
-    voyage.drPlotFixes = {
-      fileName: DR_PLOT_FIXES_RELATIVE_PATH,
-      samples: voyageFixes.length,
-      sourceFile: DR_PLOTTER_FIXES_FILE,
-      startedAt: voyage.startedAt || null,
-      stoppedAt: voyage.stoppedAt || null,
-    };
-    if (!source) {
-      voyage.drPlotFixes.sourceAvailable = false;
-      appendVoyageEvent(voyage, "dr-plot-fixes-missing", "No AJRM Marine DR Plotter plot-fix file was available");
-      return;
-    }
-    voyage.drPlotFixes.sourceAvailable = true;
-    await fs.promises.mkdir(path.join(voyage.directory, "tracks"), { recursive: true });
-    await writeJson(path.join(voyage.directory, DR_PLOT_FIXES_RELATIVE_PATH), {
-      schemaVersion: 1,
-      source: "AJRM Marine DR Plotter",
-      voyageId: voyage.id || null,
-      startedAt: voyage.startedAt || null,
-      stoppedAt: voyage.stoppedAt || null,
-      plotFixes: voyageFixes,
-    });
-    appendVoyageEvent(
-      voyage,
-      "dr-plot-fixes",
-      `${voyageFixes.length} AJRM Marine DR Plotter fix${voyageFixes.length === 1 ? "" : "es"} copied into voyage bundle`,
-    );
-  }
-
   async function copyConsoleBiteReports(voyage) {
     if (!voyage?.directory) return;
     const targetDirectory = path.join(voyage.directory, "system", "bite-reports");
@@ -4299,18 +4257,6 @@ function boundedErrorMessage(error) {
   return message.trim().slice(0, 300) || "unknown error";
 }
 
-function filterDrPlotFixesForVoyage(plotFixes, startedAt, stoppedAt) {
-  const startMs = Date.parse(startedAt);
-  const stopMs = Date.parse(stoppedAt);
-  return normalizeDrPlotFixes(plotFixes).filter((fix) => {
-    const timestampMs = Date.parse(fix.timestamp);
-    if (!Number.isFinite(timestampMs)) return false;
-    if (Number.isFinite(startMs) && timestampMs < startMs) return false;
-    if (Number.isFinite(stopMs) && timestampMs > stopMs) return false;
-    return true;
-  });
-}
-
 function biteReportOverlapsVoyage(voyage, report, fileName = "") {
   const startMs = Date.parse(voyage?.startedAt || "");
   const stopMs = Date.parse(voyage?.stoppedAt || "");
@@ -4345,118 +4291,15 @@ function reportTimestampFromFileName(fileName) {
   return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}Z`;
 }
 
-function normalizeDrPlotFixes(value) {
-  return (Array.isArray(value) ? value : [])
-    .map(normalizeDrPlotFix)
-    .filter(Boolean)
-    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
-}
-
-function normalizeDrPlotFix(value) {
-  const timestamp = normalizeIsoTimestamp(value?.timestamp);
-  const position = normalizeLatLonPosition(value?.position);
-  if (!timestamp || !position) return null;
-  return {
-    id: typeof value.id === "string" && value.id.trim() ? value.id.trim().slice(0, 80) : `plot-${timestamp}`,
-    timestamp,
-    automatic: value.automatic === true,
-    plotType: ["manual", "timed", "gps-lost", "gps-return", "observed-fix"].includes(value.plotType) ? value.plotType : null,
-    note: stringOrNull(value.note),
-    position,
-    trust: stringOrNull(value.trust),
-    drSource: stringOrNull(value.drSource),
-    uncertaintyRadiusMeters: numberOrNull(value.uncertaintyRadiusMeters),
-    drGpsDependent: booleanOrNull(value.drGpsDependent),
-    drLeewayStatus: stringOrNull(value.drLeewayStatus),
-    drCurrentOrigin: stringOrNull(value.drCurrentOrigin),
-    drHeadingSource: stringOrNull(value.drHeadingSource),
-    drTrackThroughWaterSource: stringOrNull(value.drTrackThroughWaterSource),
-    drSpeedThroughWaterSource: stringOrNull(value.drSpeedThroughWaterSource),
-    drCurrentSource: stringOrNull(value.drCurrentSource),
-    drLeewaySource: stringOrNull(value.drLeewaySource),
-    integritySource: stringOrNull(value.integritySource),
-    integrityAssurance: stringOrNull(value.integrityAssurance),
-    integrityComparisonAvailable: booleanOrNull(
-      value.integrityComparisonAvailable,
-    ),
-    integrityUnavailableReason: longStringOrNull(
-      value.integrityUnavailableReason,
-    ),
-    integrityAgeSeconds: numberOrNull(value.integrityAgeSeconds),
-    integrityUncertaintyRadiusMeters: numberOrNull(
-      value.integrityUncertaintyRadiusMeters,
-    ),
-    integrityGpsDependent: booleanOrNull(value.integrityGpsDependent),
-    integrityLeewayStatus: stringOrNull(value.integrityLeewayStatus),
-    integrityCurrentOrigin: stringOrNull(value.integrityCurrentOrigin),
-    integrityHeadingSource: stringOrNull(value.integrityHeadingSource),
-    integrityTrackThroughWaterSource: stringOrNull(
-      value.integrityTrackThroughWaterSource,
-    ),
-    integritySpeedThroughWaterSource: stringOrNull(
-      value.integritySpeedThroughWaterSource,
-    ),
-    integrityCurrentSource: stringOrNull(value.integrityCurrentSource),
-    integrityLeewaySource: stringOrNull(value.integrityLeewaySource),
-    referenceKind: stringOrNull(value.referenceKind),
-    referenceSource: stringOrNull(value.referenceSource),
-    referenceMethod: stringOrNull(value.referenceMethod),
-    referenceAgeSeconds: numberOrNull(value.referenceAgeSeconds),
-    referenceUncertaintyDegrees: numberOrNull(
-      value.referenceUncertaintyDegrees,
-    ),
-    referenceGpsDependent: booleanOrNull(value.referenceGpsDependent),
-    lastTrustedFixAgeSeconds: numberOrNull(value.lastTrustedFixAgeSeconds),
-    distanceFromLastTrustedFixMeters: numberOrNull(value.distanceFromLastTrustedFixMeters),
-    stwMps: numberOrNull(value.stwMps),
-    headingTrueDegrees: numberOrNull(value.headingTrueDegrees),
-    sogMps: numberOrNull(value.sogMps),
-    cogTrueDegrees: numberOrNull(value.cogTrueDegrees),
-    currentDriftMps: numberOrNull(value.currentDriftMps),
-    currentSetTrueDegrees: numberOrNull(value.currentSetTrueDegrees),
-    resource: normalizeDrFixResource(value.resource),
-  };
-}
-
-function normalizeDrFixResource(value) {
-  if (!value || typeof value !== "object") return null;
-  const resourceType = stringOrNull(value.resourceType);
-  const feature = normalizeGeoJsonPointFeature(value.feature);
-  if (!resourceType || !feature) return null;
-  return { resourceType, feature };
-}
-
-function normalizeGeoJsonPointFeature(value) {
-  if (!value || typeof value !== "object") return null;
-  if (value.type !== "Feature") return null;
-  const coordinates = Array.isArray(value.geometry?.coordinates) ? value.geometry.coordinates.map(Number) : [];
-  if (value.geometry?.type !== "Point" || coordinates.length < 2) return null;
-  const longitude = coordinates[0];
-  const latitude = coordinates[1];
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  const properties = value.properties && typeof value.properties === "object" ? { ...value.properties } : {};
-  return {
-    type: "Feature",
-    geometry: {
-      type: "Point",
-      coordinates: [longitude, latitude],
-    },
-    properties,
-  };
-}
-
 function normalizeIsoTimestamp(value) {
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-function normalizeLatLonPosition(value) {
-  const latitude = numberOrNull(value?.latitude);
-  const longitude = numberOrNull(value?.longitude);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
-  return { latitude, longitude };
+function normalizeOwnContext(value) {
+  const context = String(value || "").trim();
+  if (!context || context === "vessels.self") return null;
+  return context.startsWith("vessels.") ? context : `vessels.${context}`;
 }
 
 function drTrackSample(value, timestamp) {
@@ -5734,9 +5577,8 @@ module.exports._private = {
   compareVoyageBundlesNewestFirst,
   defaultVoyageComment,
   drTrackSample,
-  filterDrPlotFixesForVoyage,
   nextMovementGateState,
-  normalizeDrPlotFixes,
+  normalizeOwnContext,
   normalizeObservationText,
   normalizeRouteTimeline,
   normalizeTrafficProfile,

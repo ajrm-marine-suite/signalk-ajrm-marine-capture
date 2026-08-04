@@ -1,6 +1,6 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.7.11",
+  "version": "0.7.12",
   "description": "Canonical voyage recorder, fixed-rate replay, and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
@@ -43,7 +43,7 @@
   "signalk-plugin-enabled-by-default": true,
   "signalk": {
     "displayName": "AJRM Marine Capture",
-    "appIcon": "./icon.svg",
+    "appIcon": "./public/icon.svg",
     "recommends": [
       "signalk-ajrm-marine-snapshot",
       "signalk-ajrm-marine-voyage-viewer"

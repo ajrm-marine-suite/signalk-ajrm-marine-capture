@@ -179,6 +179,7 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
     assert.equal(stopped.statusCode, 200);
     const zip = new AdmZip(stopped.body.bundle.path);
     const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.ownContext, "vessels.urn:mrn:imo:mmsi:235008635");
     assert.equal(index.observations.count, 3);
     assert.equal(index.observations.evidenceCount, 1);
     assert.equal(index.observations.evidenceErrorCount, 1);

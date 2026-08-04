@@ -124,8 +124,7 @@ manually from its web page. Diagnostic modes control Snapshot collection:
 - `debug`: richer snapshots plus periodic snapshots.
 
 Voyage bundles may also include timestamped skipper observations, optional
-Snapshot evidence, GPS Integrity DR tracks, DR Plotter fixes, and Console BITE
-reports.
+Snapshot evidence, GPS Integrity DR tracks, and Console BITE reports.
 
 If Signal K or the Pi stops before a voyage has been finalised, Capture
 automatically recovers the unzipped voyage working directory on its next
