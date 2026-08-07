@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.15
+
+- Document Capture as the sole current voyage recorder, replay engine,
+  evidence collector, and ZIP builder, with Logger retained only for legacy
+  bundle compatibility.
+
 ## 0.7.14
 
 - Store payload inventory paths with portable ZIP separators on every platform,

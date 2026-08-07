@@ -3,7 +3,7 @@
 > **Alpha software:** this software has not been validated for navigation or
 > safety and must not be relied upon for either purpose.
 
-AJRM Marine Capture v0.7.11 is the single AJRM Marine voyage recorder, replay
+AJRM Marine Capture v0.7.15 is the single AJRM Marine voyage recorder, replay
 engine, evidence collector, and ZIP builder. It replaces AJRM Marine Logger.
 
 ## The simple data model
@@ -174,3 +174,15 @@ Suite plugins can use the equivalent in-process
 
 Voyage ZIPs are built as disk-backed streams and downloaded through the
 browser's native streaming path rather than a whole-file JavaScript blob.
+
+## Install
+
+```bash
+cd ~/.signalk
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.7.15 --omit=dev --no-package-lock
+sudo systemctl restart signalk
+```
+
+AJRM Marine Logger is retired and should not be installed alongside current
+Capture. Legacy Logger fields and file references remain supported only where
+needed to convert or review older voyage bundles.
