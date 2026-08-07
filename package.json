@@ -1,11 +1,10 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.7.16",
+  "version": "0.8.0",
   "description": "Canonical voyage recorder, fixed-rate replay, and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
-    "convert:legacy-voyage": "node tools/convert-legacy-voyage.js",
-    "test": "node --test test/*.test.js && node --check plugin/index.js && node --check public/app.js"
+    "test": "node --test test/*.test.js && node --check plugin/index.js && node --check public/app.js && node -e \"JSON.parse(require('node:fs').readFileSync('plugin/openApi.json', 'utf8'))\""
   },
   "keywords": [
     "signalk-node-server-plugin",
@@ -36,7 +35,6 @@
   "files": [
     "plugin",
     "public",
-    "tools",
     "README.md",
     "LICENSE"
   ],

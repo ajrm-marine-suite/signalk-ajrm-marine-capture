@@ -25,7 +25,7 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
       zip.once("end", () => {
         finish(
           new Error(
-            `Parent voyage does not contain canonical input ${INPUT_RELATIVE_PATH}; legacy voyages require one-off conversion`,
+            `Parent voyage does not contain the required canonical input ${INPUT_RELATIVE_PATH}`,
           ),
         );
       });

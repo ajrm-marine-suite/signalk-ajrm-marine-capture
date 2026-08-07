@@ -62,7 +62,7 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(appSource, /Complete · finalising recomputed result/);
   assert.match(appSource, /finalisationRunning \|\| !recomputedActive/);
   assert.match(htmlSource, /browser may be closed/);
-  assert.match(htmlSource, /legacy input remain available|Older bundles without canonical input/);
+  assert.match(htmlSource, /not a current canonical voyage/);
   assert.match(appSource, /window\.confirm/);
 });
 

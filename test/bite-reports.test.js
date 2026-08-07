@@ -3,12 +3,22 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const createPlugin = require("../plugin");
+const packageInfo = require("../package.json");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "plugin", "index.js"), "utf8");
 const {
   biteReportOverlapsVoyage,
   compareVoyageBundlesNewestFirst,
 } = createPlugin._private;
+
+test("Capture describes its HTTP routes with a versioned OpenAPI document", () => {
+  const plugin = createPlugin({});
+  const document = plugin.getOpenApi();
+  assert.equal(document.openapi, "3.0.0");
+  assert.equal(document.info.version, packageInfo.version);
+  assert.ok(document.paths["/voyage/replay/start"].post);
+  assert.ok(document.paths["/voyages/{file}/download"].get);
+});
 
 test("Capture bundles voyage-window Console BITE reports for offline debugging", () => {
   assert.match(source, /CONSOLE_BITE_REPORTS_DIRECTORY/);
@@ -26,10 +36,7 @@ test("startup automatically recovers interrupted canonical voyages", () => {
   assert.match(source, /async function recoverCanonicalInputState/);
   assert.match(source, /recoveredAfterRestart: true/);
   assert.match(source, /truncatedTrailingBytes/);
-  assert.match(
-    source,
-    /cleanupPortableDownloadWorkspacesOnStartup\(\),\s*closeIncompleteVoyagesOnStartup\(\)/s,
-  );
+  assert.match(source, /startupRecoveryPromise = closeIncompleteVoyagesOnStartup\(\)/);
 });
 
 test("voyage list sorts by voyage start rather than ZIP recovery time", () => {

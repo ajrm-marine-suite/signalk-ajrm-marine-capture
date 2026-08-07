@@ -230,7 +230,7 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
   }
 });
 
-test("legacy voyage bundles fail clearly instead of entering compatibility playback", async () => {
+test("non-canonical voyage bundles fail clearly instead of entering compatibility playback", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-legacy-replay-"));
   const voyageDirectory = path.join(root, "voyages");
   await fs.mkdir(voyageDirectory, { recursive: true });
@@ -246,7 +246,7 @@ test("legacy voyage bundles fail clearly instead of entering compatibility playb
       file: "legacy.zip",
     });
     assert.equal(result.statusCode, 400);
-    assert.match(result.body.error, /one-off conversion/i);
+    assert.match(result.body.error, /required ajrm-marine-canonical-input-v1 contract/i);
   } finally {
     plugin.stop();
     await fs.rm(root, { recursive: true, force: true });
@@ -306,7 +306,6 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
       startedAt: "2026-08-03T19:08:53.000Z",
       startReason: "movement detected",
       captureMode: "minimal",
-      captureFileMode: "portable",
       canonicalInput: {
         contract: INPUT_CONTRACT,
         schemaVersion: 1,

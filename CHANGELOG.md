@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.0
+
+- Remove the legacy-voyage converter and its installed command. Historical
+  voyage repair is no longer part of the runtime package.
+- Remove reference-mode portable-download rebuilding and serve current
+  self-contained voyage ZIPs directly.
+- Remove dead standalone Logger API/HTTP integration, Logger capture copying,
+  capture-reference discovery, and raw capture indexing branches left behind
+  by the 0.7 recorder/replay merger.
+- Use only `~/AJRMMarineLogs/voyages`; the old CapturePlusLogs directory is no
+  longer discovered implicitly.
+- Simplify current voyage status and manifests around canonical input and
+  recomputed output rather than obsolete capture-file modes.
+
 ## 0.7.16
 
 - Recover a completed current-format recomputation from Capture's durable

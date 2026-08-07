@@ -14,35 +14,8 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
     path.join(os.tmpdir(), "ajrm-capture-observations-"),
   );
   const voyageDirectory = path.join(root, "voyages");
-  const loggerDirectory = path.join(root, "logger");
-  const startedAt = new Date().toISOString();
   let snapshotFailure = false;
   const app = fakeApp({
-    loggerApi: {
-      async status() {
-        return { ok: true, playback: { loaded: false }, captures: [] };
-      },
-      paths() {
-        return { captures: path.join(loggerDirectory, "captures") };
-      },
-      async startCapture() {
-        return {
-          active: true,
-          fileName: "capture-test.jsonl",
-          startedAt,
-          from: startedAt,
-        };
-      },
-      async stopCapture() {
-        return {
-          active: false,
-          fileName: "capture-test.jsonl",
-          startedAt,
-          from: startedAt,
-          to: new Date().toISOString(),
-        };
-      },
-    },
     snapshotApi: {
       async snapshot(options) {
         assert.equal(options.snapshotPreset, "debug");
@@ -62,9 +35,7 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
   plugin.start({
     enabled: false,
     voyageDirectory,
-    ajrmMarineLoggerLogDirectory: loggerDirectory,
     captureMode: "minimal",
-    captureFileMode: "reference",
     deleteWorkingDirectoryAfterZip: true,
   });
 
@@ -228,10 +199,9 @@ test("active-voyage observations retain timestamps and optional Snapshot evidenc
   }
 });
 
-function fakeApp({ loggerApi, snapshotApi }) {
+function fakeApp({ snapshotApi }) {
   return {
     signalk: new EventEmitter(),
-    ajrmMarineLoggerApi: loggerApi,
     ajrmMarineSnapshotApi: snapshotApi,
     selfId: "urn:mrn:imo:mmsi:235008635",
     getSelfPath() {

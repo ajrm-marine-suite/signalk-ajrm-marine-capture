@@ -3,7 +3,7 @@
 > **Alpha software:** this software has not been validated for navigation or
 > safety and must not be relied upon for either purpose.
 
-AJRM Marine Capture v0.7.15 is the single AJRM Marine voyage recorder, replay
+AJRM Marine Capture v0.8.0 is the single AJRM Marine voyage recorder, replay
 engine, evidence collector, and ZIP builder. It replaces AJRM Marine Logger.
 
 ## The simple data model
@@ -70,50 +70,6 @@ verified only when Capture has both:
 
 Interrupting replay produces an explicitly incomplete, unverified ZIP.
 
-## Legacy voyages
-
-Bundles without `ajrm-marine-canonical-input-v1` remain downloadable and
-viewable but are not replayed through a runtime compatibility layer. If an old
-voyage matters, convert its physical input once into the canonical JSONL
-format. This keeps all legacy timestamp repair outside normal recording and
-replay.
-
-Run the one-off converter from a Capture source checkout or installed package:
-
-```bash
-npm run convert:legacy-voyage -- /path/to/voyage.zip
-```
-
-It also accepts an extracted voyage directory. The default output is a new
-`*-canonical.zip`; the source is never changed and an existing output is never
-overwritten. Use `--output /path/to/name.zip` to choose another destination.
-Legacy reference-mode bundles are supported when every exact source path
-declared in `index.captureReferences` still exists. Referenced raw segments are
-read in place and are not copied into the converted ZIP.
-
-The converter checks each referenced file's actual timestamp coverage against
-the range declared in the legacy index. Truncated recovered data fails closed.
-For a deliberately partial testing replay, `--allow-incomplete` creates a
-bundle whose index and conversion report explicitly mark coverage incomplete;
-it must not be treated as complete voyage evidence.
-
-The converter:
-
-- reads only the voyage window explicitly declared by `index.json`;
-- retains only updates whose explicit source matches `YDEN` (additional
-  physical prefixes can be supplied with `--source-prefix`);
-- keeps every original delta value and embedded timestamp unchanged;
-- derives `elapsedMs` from the legacy envelope `capturedAt` field in file
-  order, clamping backwards timestamps to the preceding logical time; and
-- adds `conversion/legacy-conversion-report.json` with record counts, timing
-  regressions, the exact repair rule, validation result, and SHA-256 digest.
-
-The converted ZIP is accepted by Capture's fixed-rate replay. Conversion is a
-visible migration, not a compatibility mode used by ordinary recording or
-replay. Conversion staging is disk-backed beside the requested output and is
-removed when conversion finishes or fails; large bundles are not staged in
-`/tmp`.
-
 ## Ordinary voyage recording
 
 Capture can start and stop automatically from explicit motion evidence, or
@@ -179,10 +135,10 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.7.16 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.8.0 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 
 AJRM Marine Logger is retired and should not be installed alongside current
-Capture. Legacy Logger fields and file references remain supported only where
-needed to convert or review older voyage bundles.
+Capture. Capture 0.8 accepts only voyages declaring the current canonical input
+contract; historical format conversion is deliberately outside the runtime.

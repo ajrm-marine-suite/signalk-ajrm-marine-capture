@@ -37,7 +37,7 @@ test("canonical input is streamed from a voyage ZIP", async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-test("legacy voyage without canonical input fails clearly", async () => {
+test("voyage without canonical input fails clearly", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-legacy-zip-"));
   const zipPath = path.join(root, "legacy.zip");
   const zip = new AdmZip();
@@ -45,7 +45,7 @@ test("legacy voyage without canonical input fails clearly", async () => {
   zip.writeZip(zipPath);
   await assert.rejects(
     extractCanonicalInputFromZip(zipPath, path.join(root, "replay.jsonl")),
-    /legacy voyages require one-off conversion/,
+    /required canonical input/,
   );
   await fs.rm(root, { recursive: true, force: true });
 });

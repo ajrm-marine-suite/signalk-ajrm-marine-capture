@@ -160,7 +160,7 @@ function render(status) {
   elements.thresholdValue.textContent = status.thresholds
     ? `${Number(status.thresholds.movementSpeedKnots || 0).toFixed(2)} kn / ${Number(status.thresholds.movementSpeedMetersPerSecond || 0).toFixed(2)} m/s`
     : "-";
-  elements.modeValue.textContent = `${titleCase(status.captureMode || "voyage")} / ${titleCase(status.captureFileMode || "portable")}`;
+  elements.modeValue.textContent = titleCase(status.captureMode || "voyage");
   elements.captureValue.textContent = status.currentVoyage?.recomputedReplay
     ? "recording recomputed output"
     : status.currentVoyage
@@ -256,7 +256,7 @@ function renderReplayRecorder(status) {
       `Ready to replay ${selectedBundle.fileName}.`;
   } else if (selectedBundle) {
     elements.replayCaptureInfo.textContent =
-      `${selectedBundle.fileName} is a legacy/view-only voyage without canonical input.`;
+      `${selectedBundle.fileName} is not a current canonical voyage and cannot be replayed.`;
   } else {
     elements.replayCaptureInfo.textContent =
       "Select a canonical voyage bundle below, then start its fixed 1x replay.";

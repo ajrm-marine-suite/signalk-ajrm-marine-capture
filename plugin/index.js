@@ -1,17 +1,15 @@
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
-const http = require("node:http");
-const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
-const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const AdmZip = require("adm-zip");
 const { ZipArchive } = require("archiver");
 const yauzl = require("yauzl");
 const packageInfo = require("../package.json");
+const openApi = require("./openApi.json");
 const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
@@ -34,7 +32,6 @@ const AJRM_MARINE_SNAPSHOT_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineSnap
 const AJRM_MARINE_CAPTURE_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineCaptureApi");
 const AJRM_MARINE_DISPLAY_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineDisplayApi");
 const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
-const CAPTURE_FILE_MODES = new Set(["portable", "reference"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
 const AJRM_MARINE_GPS_INTEGRITY_STATE_PATH = "plugins.ajrmMarineGpsIntegrity.navigationIntegrity";
 const AJRM_MARINE_TRAFFIC_TARGETS_PATH = "plugins.ajrmMarineTraffic.targets";
@@ -53,8 +50,6 @@ const MAX_OBSERVATIONS_PER_VOYAGE = 1000;
 const MAX_OBSERVATIONS_RETURNED = 200;
 const MAX_PARENT_OBSERVATIONS_BYTES = 5 * 1024 * 1024;
 const MAX_VOYAGE_INDEX_BYTES = 2 * 1024 * 1024;
-const PORTABLE_DOWNLOAD_DIRECTORY_PREFIX = "ajrm-marine-voyage-download-";
-const PORTABLE_DOWNLOAD_STAGING_DIRECTORY = ".portable-download-work";
 const voyageBundleMetadataCache = new Map();
 const voyageBundleMetadataJobs = new Map();
 const CONSOLE_BITE_REPORTS_DIRECTORY = path.join(
@@ -66,8 +61,6 @@ const CONSOLE_BITE_REPORTS_DIRECTORY = path.join(
 );
 const DEFAULT_LOG_DIRECTORY = "~/AJRMMarineLogs";
 const DEFAULT_VOYAGE_DIRECTORY = `${DEFAULT_LOG_DIRECTORY}/voyages`;
-const LEGACY_LOG_DIRECTORY = ["~/Capture", "PlusLogs"].join("");
-const LEGACY_VOYAGE_DIRECTORY = `${LEGACY_LOG_DIRECTORY}/voyages`;
 const PLUGIN_CONFIG_FILE = path.join(
   os.homedir(),
   ".signalk",
@@ -213,10 +206,7 @@ module.exports = function ajrmMarineCapture(app) {
     notificationSequence = 0;
     ensureDirectories();
     exposeCaptureApi();
-    startupRecoveryPromise = Promise.all([
-      cleanupPortableDownloadWorkspacesOnStartup(),
-      closeIncompleteVoyagesOnStartup(),
-    ]).catch((error) => {
+    startupRecoveryPromise = closeIncompleteVoyagesOnStartup().catch((error) => {
       logError("startup recovery failed", error);
     });
     deltaListener = (delta) => onDelta(delta);
@@ -458,6 +448,14 @@ module.exports = function ajrmMarineCapture(app) {
     });
   };
 
+  plugin.getOpenApi = () => ({
+    ...openApi,
+    info: {
+      ...openApi.info,
+      version: packageInfo.version,
+    },
+  });
+
   return plugin;
 
   function normalizeOptions(value) {
@@ -481,44 +479,18 @@ module.exports = function ajrmMarineCapture(app) {
       movementSeconds: clampInt(source.movementSeconds, 20, 1, 86400),
       stoppedMinutes: clampInt(source.stoppedMinutes, 10, 1, 1440),
       captureMode: CAPTURE_MODES.has(source.captureMode) ? source.captureMode : "voyage",
-      captureFileMode: "portable",
       snapshotIntervalSeconds: clampInt(source.snapshotIntervalSeconds, 300, 30, 86400),
       deleteWorkingDirectoryAfterZip: source.deleteWorkingDirectoryAfterZip !== false,
       minFreeDiskGb: clampNumber(source.minFreeDiskGb, 2, 0.1, 1024),
     };
   }
 
-  function defaultLoggerDirectory() {
-    const preferred = expandHome(DEFAULT_LOG_DIRECTORY);
-    const legacy = expandHome(LEGACY_LOG_DIRECTORY);
-    return !fs.existsSync(preferred) && fs.existsSync(legacy) ? LEGACY_LOG_DIRECTORY : DEFAULT_LOG_DIRECTORY;
-  }
-
   function defaultVoyageDirectory() {
-    const preferred = expandHome(DEFAULT_VOYAGE_DIRECTORY);
-    const legacy = expandHome(LEGACY_VOYAGE_DIRECTORY);
-    return !fs.existsSync(preferred) && fs.existsSync(legacy) ? LEGACY_VOYAGE_DIRECTORY : DEFAULT_VOYAGE_DIRECTORY;
+    return DEFAULT_VOYAGE_DIRECTORY;
   }
 
   function ensureDirectories() {
     fs.mkdirSync(options.voyageDirectory, { recursive: true });
-  }
-
-  function portableDownloadStagingRoot() {
-    return path.join(options.voyageDirectory, PORTABLE_DOWNLOAD_STAGING_DIRECTORY);
-  }
-
-  async function cleanupPortableDownloadWorkspacesOnStartup() {
-    const removed = await cleanupPortableDownloadWorkspaces([
-      os.tmpdir(),
-      portableDownloadStagingRoot(),
-    ]);
-    if (removed) {
-      addEvent(
-        "portable-download-recovery",
-        `Removed ${removed} abandoned portable voyage download workspace${removed === 1 ? "" : "s"}`,
-      );
-    }
   }
 
   async function reportInterruptedVoyageDirectories() {
@@ -866,22 +838,11 @@ module.exports = function ajrmMarineCapture(app) {
     if (!info.isFile() || !fileName.endsWith(".zip")) {
       throw new Error("Voyage bundle not found");
     }
-    const temporaryBundle = await buildPortableDownloadBundle(
-      filePath,
-      fileName,
-      portableDownloadStagingRoot(),
-    );
-    let cleaned = false;
     return {
       fileName,
-      path: temporaryBundle?.path || filePath,
-      temporaryBundle,
-      async cleanup() {
-        if (!cleaned && temporaryBundle?.directory) {
-          cleaned = true;
-          await fs.promises.rm(temporaryBundle.directory, { recursive: true, force: true }).catch(() => {});
-        }
-      },
+      path: filePath,
+      temporaryBundle: null,
+      async cleanup() {},
     };
   }
 
@@ -905,7 +866,7 @@ module.exports = function ajrmMarineCapture(app) {
     const parentIndex = await readVoyageZipIndex(parentVoyagePath);
     if (parentIndex?.canonicalInput?.contract !== INPUT_CONTRACT) {
       throw new Error(
-        `Parent voyage does not declare ${INPUT_CONTRACT}; legacy voyages require one-off conversion`,
+        `Parent voyage does not declare the required ${INPUT_CONTRACT} contract`,
       );
     }
     const recomputedReplay = {
@@ -1008,7 +969,6 @@ module.exports = function ajrmMarineCapture(app) {
       ownContext: normalizeOwnContext(app.selfId || app.selfContext || app.self),
       snapshotCount: 0,
       captureMode: startOptions.recomputedReplay ? "voyage" : options.captureMode,
-      captureFileMode: "portable",
       recomputedReplay: startOptions.recomputedReplay || null,
       monotonicStartedAtMs: performance.now(),
       lastCanonicalElapsedMs: 0,
@@ -1123,8 +1083,6 @@ module.exports = function ajrmMarineCapture(app) {
         `${currentVoyage.id}: canonical-input replay started automatically at fixed 1x`,
       );
     }
-    currentVoyage.captureReferences = [];
-    currentVoyage.captureFiles = [];
     await writeJson(path.join(directory, "system", "start-status.json"), await buildStatus());
     if (shouldTakeSnapshot("start")) await takeSnapshot("start");
     await writeVoyageIndex(currentVoyage);
@@ -1663,7 +1621,6 @@ module.exports = function ajrmMarineCapture(app) {
   async function closeIncompleteVoyageDirectory(id, directory) {
     const now = new Date().toISOString();
     await fs.promises.mkdir(path.join(directory, "system"), { recursive: true });
-    await fs.promises.mkdir(path.join(directory, "capture"), { recursive: true });
     await fs.promises.mkdir(
       path.join(directory, OBSERVATION_EVIDENCE_DIRECTORY),
       { recursive: true },
@@ -1698,16 +1655,12 @@ module.exports = function ajrmMarineCapture(app) {
       captureMode: CAPTURE_MODES.has(existingIndex?.captureMode)
         ? existingIndex.captureMode
         : options.captureMode,
-      captureFileMode: CAPTURE_FILE_MODES.has(existingIndex?.captureFileMode)
-        ? existingIndex.captureFileMode
-        : "reference",
       recomputedReplay: existingIndex?.recomputedReplay || null,
       canonicalInput,
       recomputedOutput:
         completedRecomputation?.result?.output ||
         existingIndex?.recomputedOutput ||
         null,
-      ajrmMarineLogger: existingIndex?.ajrmMarineLogger?.start || null,
       captureStop: completedRecomputation
         ? {
             ok: true,
@@ -1723,10 +1676,6 @@ module.exports = function ajrmMarineCapture(app) {
             error: "Signal K restarted before voyage recording was stopped.",
             recoveredAt: now,
           },
-      captureFiles: await listCaptureFileNames(path.join(directory, "capture")),
-      captureReferences: Array.isArray(existingIndex?.captureReferences) && existingIndex.captureReferences.length
-        ? existingIndex.captureReferences
-        : initialCaptureReferencesFromStart(existingIndex),
       observations: await rebuildObservationLog(
         directory,
         existingIndex?.observations,
@@ -1801,12 +1750,6 @@ module.exports = function ajrmMarineCapture(app) {
         : "Packaging interrupted voyage evidence",
     });
     appendVoyageEvent(voyage, "recovered", "Voyage closed at startup after Signal K restart");
-    // Since v0.7 Capture owns both canonical input and recomputed output in the
-    // voyage working directory. Startup recovery must package those durable
-    // files in place; there is no separate Logger process to query or wait for.
-    voyage.captureFiles = await listCaptureFileNames(
-      path.join(directory, "capture"),
-    );
     await copyConsoleBiteReports(voyage);
     await writeJson(path.join(directory, "system", "recovery-status.json"), {
       ok: true,
@@ -1817,7 +1760,6 @@ module.exports = function ajrmMarineCapture(app) {
         voyage.recomputedReplay
           ? voyage.recomputationVerified === true
           : null,
-      captureFiles: voyage.captureFiles,
       note: completedRecomputation
         ? completedRecomputation.recomputationVerified === true
           ? "Capture had already completed and verified the recomputed replay. Startup recovery resumed only the later evidence and ZIP finalisation work."
@@ -2164,10 +2106,7 @@ module.exports = function ajrmMarineCapture(app) {
     if (typeof ajrmMarineSnapshotApi?.snapshot === "function") {
       return ajrmMarineSnapshotApi.snapshot(snapshotOptions);
     }
-    const query = [
-      `snapshotPreset=${encodeURIComponent(snapshotPreset)}`,
-    ].join("&");
-    return httpJson("GET", `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-snapshot/snapshot?${query}`);
+    throw new Error("AJRM Marine Snapshot in-process API is unavailable");
   }
 
   function appendObservation(input) {
@@ -2442,59 +2381,6 @@ module.exports = function ajrmMarineCapture(app) {
     };
   }
 
-  async function copyCaptureFiles(voyage, captureStop) {
-    const capturesDir = ajrmMarineLoggerCapturesDir();
-    if (voyage.recomputedReplay) {
-      const manifest = validateRecomputedResultSegmentManifest(
-        captureStop?.recording?.replayResult?.resultSegments,
-      );
-      const segments = manifest.segments;
-      voyage.captureReferences = segments.map((segment) =>
-        captureReference(capturesDir, segment),
-      );
-      const copied = [];
-      for (const segment of segments) {
-        const copiedName = await copyDeclaredReplayResultSegment(
-          capturesDir,
-          segment,
-          voyage.directory,
-        );
-        copied.push(copiedName);
-        addVoyageEvent("capture-copied", copiedName);
-      }
-      voyage.captureFiles = copied;
-      return;
-    }
-    const status = voyage.captureFileMode === "reference"
-      ? await getAjrmMarineLoggerStatus()
-      : await waitForAjrmMarineLoggerCompression(capturesDir, voyage, captureStop);
-    const segments = captureSegmentsForVoyage(status, voyage, captureStop);
-    voyage.captureReferences = segments.map((segment) =>
-      captureReference(capturesDir, segment),
-    );
-    if (voyage.captureFileMode === "reference") {
-      voyage.captureFiles = [];
-      addVoyageEvent(
-        "capture-referenced",
-        `${segments.length} AJRM Marine Logger segment${segments.length === 1 ? "" : "s"} referenced without copying`,
-      );
-      if (!segments.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
-      return;
-    }
-    const copied = [];
-    const copiedNames = new Set();
-    for (const segment of segments) {
-      const copiedName = await copyCaptureCandidate(capturesDir, segment.fileName, voyage.directory);
-      if (copiedName && !copiedNames.has(copiedName)) {
-        copiedNames.add(copiedName);
-        copied.push(copiedName);
-        addVoyageEvent("capture-copied", copiedName);
-      }
-    }
-    voyage.captureFiles = copied;
-    if (!copied.length) addVoyageEvent("capture-copy-warning", "No AJRM Marine Logger segments matched voyage range");
-  }
-
   function markReplayResultIncomplete(result, {
     aborted,
     abortReason,
@@ -2541,548 +2427,9 @@ module.exports = function ajrmMarineCapture(app) {
     };
   }
 
-  async function copyIncompleteRecomputedCaptureFiles(voyage, captureStop) {
-    const capturesDir = ajrmMarineLoggerCapturesDir();
-    const captureDirectory = path.join(voyage.directory, "capture");
-    await fs.promises.mkdir(captureDirectory, { recursive: true });
-    const existingNames = await listCaptureFileNames(captureDirectory);
-    const copiedByLogicalName = new Map(
-      existingNames.map((fileName) => [logicalCaptureFileName(fileName), fileName]),
-    );
-    const referencesByLogicalName = new Map();
-    for (const reference of Array.isArray(voyage.captureReferences)
-      ? voyage.captureReferences
-      : []) {
-      if (!isSafeCaptureFileName(reference?.fileName)) continue;
-      referencesByLogicalName.set(
-        logicalCaptureFileName(reference.fileName),
-        reference,
-      );
-    }
-
-    const replayResult =
-      captureStop?.recording?.replayResult ||
-      voyage.recomputedReplay?.result ||
-      null;
-    const declaredSegments = incompleteReplayResultSegments(
-      replayResult?.resultSegments,
-      voyage,
-    );
-    for (const segment of declaredSegments) {
-      const logicalName = logicalCaptureFileName(segment.fileName);
-      referencesByLogicalName.set(
-        logicalName,
-        captureReference(capturesDir, segment),
-      );
-      if (copiedByLogicalName.has(logicalName)) continue;
-      const copiedName = await copyStableIncompleteReplayCandidate(
-        capturesDir,
-        segment.fileName,
-        voyage.directory,
-        Number(segment.bytes || 0),
-      );
-      if (copiedName) {
-        copiedByLogicalName.set(logicalName, copiedName);
-        appendVoyageEvent(voyage, "capture-copied", copiedName);
-      } else {
-        appendVoyageEvent(
-          voyage,
-          "capture-copy-warning",
-          `Declared partial replay segment was unavailable or changed: ${segment.fileName}`,
-        );
-      }
-    }
-
-    const recoveredSegments = await incompleteReplayCaptureCandidates(
-      capturesDir,
-      voyage,
-      captureStop,
-      replayResult,
-    );
-    for (const segment of recoveredSegments) {
-      const logicalName = logicalCaptureFileName(segment.fileName);
-      if (!referencesByLogicalName.has(logicalName)) {
-        referencesByLogicalName.set(
-          logicalName,
-          captureReference(capturesDir, segment),
-        );
-      }
-      if (copiedByLogicalName.has(logicalName)) continue;
-      const copiedName = await copyStableIncompleteReplayCandidate(
-        capturesDir,
-        segment.fileName,
-        voyage.directory,
-        Number(segment.bytes || 0),
-      );
-      if (!copiedName) {
-        appendVoyageEvent(
-          voyage,
-          "capture-copy-warning",
-          `Partial replay segment was unavailable or changed: ${segment.fileName}`,
-        );
-        continue;
-      }
-      copiedByLogicalName.set(logicalName, copiedName);
-      appendVoyageEvent(voyage, "capture-copied", copiedName);
-    }
-
-    voyage.captureFiles = Array.from(copiedByLogicalName.values())
-      .sort((left, right) => left.localeCompare(right));
-    voyage.captureReferences = Array.from(referencesByLogicalName.values())
-      .sort((left, right) =>
-        String(left?.fileName || "").localeCompare(
-          String(right?.fileName || ""),
-        ),
-      );
-    voyage.recomputedReplay = {
-      ...voyage.recomputedReplay,
-      partialCaptureRecovery: {
-        schemaVersion: 1,
-        verified: false,
-        declaredPartialManifestAvailable:
-          Boolean(replayResult?.resultSegments) &&
-          declaredSegments.length > 0,
-        selectionMethod:
-          declaredSegments.length > 0
-            ? "finalized-declared-segments-plus-bounded-recovery"
-            : "known-name-or-strict-voyage-wall-time-window",
-        captureFiles: voyage.captureFiles,
-      },
-    };
-  }
-
-  function incompleteReplayResultSegments(manifest, voyage) {
-    if (!manifest || typeof manifest !== "object") return [];
-    const segments = [];
-    const logicalNames = new Set();
-    for (const segment of Array.isArray(manifest.segments)
-      ? manifest.segments
-      : []) {
-      const fileName = String(segment?.fileName || "");
-      if (!isSafeCaptureFileName(fileName)) {
-        appendVoyageEvent(
-          voyage,
-          "capture-copy-warning",
-          "Logger declared an unsafe partial replay segment name; it was not copied",
-        );
-        continue;
-      }
-      if (
-        segment.finalized !== true ||
-        segment.available !== true ||
-        Number(segment.bytes || 0) <= 0 ||
-        Number(segment.lines || 0) <= 0
-      ) {
-        appendVoyageEvent(
-          voyage,
-          "capture-copy-warning",
-          `Logger did not finalise partial replay segment ${fileName}; it was not trusted as a declared segment`,
-        );
-        continue;
-      }
-      const logicalName = logicalCaptureFileName(fileName);
-      if (logicalNames.has(logicalName)) {
-        appendVoyageEvent(
-          voyage,
-          "capture-copy-warning",
-          `Logger declared duplicate partial replay segment ${fileName}; the duplicate was ignored`,
-        );
-        continue;
-      }
-      logicalNames.add(logicalName);
-      segments.push(segment);
-    }
-    return segments;
-  }
-
-  async function incompleteReplayCaptureCandidates(
-    capturesDir,
-    voyage,
-    captureStop,
-    replayResult,
-  ) {
-    const knownLogicalNames = new Set();
-    const rememberKnownName = (value) => {
-      const fileName = String(value || "");
-      if (isSafeCaptureFileName(fileName)) {
-        knownLogicalNames.add(logicalCaptureFileName(fileName));
-      }
-    };
-    rememberKnownName(voyage.ajrmMarineLogger?.recording?.fileName);
-    rememberKnownName(voyage.ajrmMarineLogger?.fileName);
-    rememberKnownName(captureStop?.recording?.fileName);
-    for (const reference of Array.isArray(voyage.captureReferences)
-      ? voyage.captureReferences
-      : []) {
-      rememberKnownName(reference?.fileName);
-    }
-    for (const segment of Array.isArray(replayResult?.resultSegments?.segments)
-      ? replayResult.resultSegments.segments
-      : []) {
-      rememberKnownName(segment?.fileName);
-    }
-
-    const startedAt =
-      voyage.ajrmMarineLogger?.recording?.startedAt ||
-      voyage.ajrmMarineLogger?.recording?.from ||
-      voyage.ajrmMarineLogger?.startedAt ||
-      voyage.startedAt;
-    const fromMs = Date.parse(startedAt || "");
-    const toMs = Date.parse(voyage.stoppedAt || "");
-    const entries = await fs.promises.readdir(capturesDir, {
-      withFileTypes: true,
-    }).catch(() => []);
-    const byLogicalName = new Map();
-    for (const entry of entries) {
-      if (!entry.isFile() || !isSafeCaptureFileName(entry.name)) continue;
-      const logicalName = logicalCaptureFileName(entry.name);
-      const fileStartedAtMs = Date.parse(
-        recordingStartedAtFromFileName(entry.name),
-      );
-      const isKnown = knownLogicalNames.has(logicalName);
-      const isStrictlyInsideVoyage =
-        Number.isFinite(fromMs) &&
-        Number.isFinite(toMs) &&
-        Number.isFinite(fileStartedAtMs) &&
-        fileStartedAtMs >= fromMs - 5000 &&
-        fileStartedAtMs <= toMs + 5000;
-      if (!isKnown && !isStrictlyInsideVoyage) continue;
-      const fullPath = path.join(capturesDir, entry.name);
-      const info = await fs.promises.stat(fullPath).catch(() => null);
-      if (!info?.isFile() || info.size <= 0) continue;
-      const segment = {
-        fileName: entry.name,
-        from: recordingStartedAtFromFileName(entry.name) || null,
-        to: new Date(info.mtimeMs).toISOString(),
-        bytes: info.size,
-        compressed: entry.name.endsWith(".gz"),
-      };
-      const existing = byLogicalName.get(logicalName);
-      if (!existing || shouldPreferCaptureSegment(segment, existing)) {
-        byLogicalName.set(logicalName, segment);
-      }
-    }
-    return Array.from(byLogicalName.values())
-      .sort((left, right) => left.fileName.localeCompare(right.fileName));
-  }
-
-  async function copyStableIncompleteReplayCandidate(
-    capturesDir,
-    fileName,
-    voyageDirectory,
-    expectedBytes,
-  ) {
-    if (!isSafeCaptureFileName(fileName)) return null;
-    const logicalName = logicalCaptureFileName(fileName);
-    const candidateNames = fileName.endsWith(".gz")
-      ? [fileName, logicalName]
-      : [`${fileName}.gz`, fileName];
-    for (const candidate of candidateNames) {
-      if (!isSafeCaptureFileName(candidate)) continue;
-      const source = path.join(capturesDir, candidate);
-      const before = await fs.promises.stat(source).catch(() => null);
-      if (!before?.isFile() || before.size <= 0) continue;
-      if (
-        Number(expectedBytes || 0) > 0 &&
-        candidate === fileName &&
-        before.size !== Number(expectedBytes)
-      ) {
-        continue;
-      }
-      const target = path.join(voyageDirectory, "capture", candidate);
-      const existing = await fs.promises.stat(target).catch(() => null);
-      if (existing?.isFile() && existing.size === before.size) return candidate;
-      const temporary = `${target}.partial-${randomUUID()}`;
-      try {
-        await fs.promises.copyFile(source, temporary);
-        const [after, copied] = await Promise.all([
-          fs.promises.stat(source).catch(() => null),
-          fs.promises.stat(temporary).catch(() => null),
-        ]);
-        if (
-          !after?.isFile() ||
-          !copied?.isFile() ||
-          after.size !== before.size ||
-          after.mtimeMs !== before.mtimeMs ||
-          copied.size !== before.size
-        ) {
-          await fs.promises.unlink(temporary).catch(() => {});
-          continue;
-        }
-        await fs.promises.rename(temporary, target);
-        return candidate;
-      } catch (_error) {
-        await fs.promises.unlink(temporary).catch(() => {});
-      }
-    }
-    return null;
-  }
-
-  function isSafeCaptureFileName(value) {
-    const fileName = String(value || "");
-    return (
-      fileName.length > 0 &&
-      path.basename(fileName) === fileName &&
-      /^capture-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.jsonl(?:\.gz)?$/i.test(
-        fileName,
-      )
-    );
-  }
-
-  function validateRecomputedResultSegmentManifest(manifest) {
-    if (!manifest || typeof manifest !== "object") {
-      throw new Error("AJRM Marine Logger did not declare recomputed result segments");
-    }
-    const segments = Array.isArray(manifest.segments) ? manifest.segments : [];
-    const exactNames = new Set();
-    const logicalNames = new Set();
-    for (const segment of segments) {
-      const fileName = String(segment?.fileName || "");
-      if (
-        !fileName ||
-        path.basename(fileName) !== fileName ||
-        !/\.jsonl(?:\.gz)?$/i.test(fileName) ||
-        segment.finalized !== true ||
-        segment.available !== true ||
-        Number(segment.lines || 0) <= 0 ||
-        Number(segment.bytes || 0) <= 0
-      ) {
-        throw new Error("AJRM Marine Logger declared an invalid recomputed result segment");
-      }
-      const logicalName = logicalCaptureFileName(fileName);
-      if (exactNames.has(fileName) || logicalNames.has(logicalName)) {
-        throw new Error(`AJRM Marine Logger declared duplicate result segment ${fileName}`);
-      }
-      exactNames.add(fileName);
-      logicalNames.add(logicalName);
-    }
-    if (
-      manifest.complete !== true ||
-      segments.length === 0 ||
-      Number(manifest.segmentsTotal) !== segments.length ||
-      Number(manifest.segmentsFinalized) !== segments.length ||
-      Number(manifest.lines) !== segments.reduce(
-        (total, segment) => total + Number(segment.lines || 0),
-        0,
-      ) ||
-      Number(manifest.bytes) !== segments.reduce(
-        (total, segment) => total + Number(segment.bytes || 0),
-        0,
-      )
-    ) {
-      throw new Error("AJRM Marine Logger result segment manifest is incomplete");
-    }
-    return manifest;
-  }
-
-  async function copyDeclaredReplayResultSegment(
-    capturesDir,
-    segment,
-    voyageDirectory,
-  ) {
-    const target = path.join(
-      voyageDirectory,
-      "capture",
-      segment.fileName,
-    );
-    const expectedBytes = Number(segment.bytes || 0);
-    const existingTarget = await fs.promises.stat(target).catch(() => null);
-    if (
-      existingTarget?.isFile() &&
-      existingTarget.size === expectedBytes
-    ) {
-      return segment.fileName;
-    }
-    const source = path.join(capturesDir, segment.fileName);
-    const sourceInfo = await fs.promises.stat(source).catch(() => null);
-    if (
-      !sourceInfo?.isFile() ||
-      sourceInfo.size <= 0 ||
-      sourceInfo.size !== expectedBytes
-    ) {
-      throw new Error(
-        `Declared recomputed result segment is missing or changed: ${segment.fileName}`,
-      );
-    }
-    await fs.promises.copyFile(source, target);
-    const targetInfo = await fs.promises.stat(target).catch(() => null);
-    if (!targetInfo?.isFile() || targetInfo.size !== expectedBytes) {
-      throw new Error(
-        `Failed to verify copied recomputed result segment: ${segment.fileName}`,
-      );
-    }
-    return segment.fileName;
-  }
-
-  function initialCaptureReferences(voyage) {
-    if (voyage.captureFileMode !== "reference") return [];
-    const segments = captureSegmentsForVoyage(
-      { captures: [] },
-      voyage,
-      voyage.captureStop || null,
-    );
-    return segments.map((segment) => captureReference(ajrmMarineLoggerCapturesDir(), segment));
-  }
-
-  function initialCaptureReferencesFromStart(existingIndex) {
-    if (!existingIndex || existingIndex.captureFileMode !== "reference") return [];
-    const ajrmMarineLoggerStart = existingIndex.ajrmMarineLogger?.start || existingIndex.ajrmMarineLogger;
-    const voyage = {
-      startedAt: existingIndex.startedAt,
-      stoppedAt: existingIndex.stoppedAt || new Date().toISOString(),
-      ajrmMarineLogger: ajrmMarineLoggerStart,
-    };
-    return initialCaptureReferences({
-      ...voyage,
-      captureFileMode: "reference",
-    });
-  }
-
-  function ajrmMarineLoggerCapturesDir() {
-    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
-    const capturePaths = ajrmMarineLoggerApi?.paths ? ajrmMarineLoggerApi.paths() : null;
-    return capturePaths?.captures || path.join(options.ajrmMarineLoggerLogDirectory, "captures");
-  }
-
-  function captureReference(capturesDir, segment) {
-    const fileName = String(segment?.fileName || "");
-    return {
-      fileName,
-      sourcePath: fileName ? path.join(capturesDir, fileName) : "",
-      compressedSourcePath:
-        fileName && !fileName.endsWith(".gz") ? path.join(capturesDir, `${fileName}.gz`) : "",
-      from: segment?.from || segment?.startedAt || null,
-      to: segment?.to || segment?.modifiedAt || null,
-      compressed: segment?.compressed === true || fileName.endsWith(".gz"),
-      bytes: Number(segment?.bytes || segment?.size) || null,
-    };
-  }
-
-  async function copyCaptureCandidate(capturesDir, fileName, voyageDirectory) {
-    const candidates = fileName.endsWith(".gz")
-      ? [fileName]
-      : [`${fileName}.gz`, fileName];
-    for (const candidate of candidates) {
-      const source = path.join(capturesDir, candidate);
-      const info = await fs.promises.stat(source).catch(() => null);
-      if (!info?.isFile()) continue;
-      const target = path.join(voyageDirectory, "capture", candidate);
-      await fs.promises.copyFile(source, target);
-      return candidate;
-    }
-    return null;
-  }
-
-  async function waitForAjrmMarineLoggerCompression(capturesDir, voyage, captureStop) {
-    const deadline = Date.now() + options.captureCompressionWaitSeconds * 1000;
-    let status = await getAjrmMarineLoggerStatus();
-    while (Date.now() < deadline) {
-      const segments = captureSegmentsForVoyage(status, voyage, captureStop);
-      if (segments.length && segments.every((segment) => segment.compressed || segment.fileName.endsWith(".gz"))) {
-        return status;
-      }
-      const plainWithoutGzip = segments.some((segment) =>
-        !segment.compressed &&
-        !segment.fileName.endsWith(".gz") &&
-        !fs.existsSync(path.join(capturesDir, `${segment.fileName}.gz`)),
-      );
-      if (!plainWithoutGzip) return status;
-      await delay(2000);
-      status = await getAjrmMarineLoggerStatus();
-    }
-    return status;
-  }
-
-  async function getAjrmMarineLoggerStatus() {
-    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
-    if (ajrmMarineLoggerApi?.status) {
-      return ajrmMarineLoggerApi.status().catch((error) => ({ ok: false, error: error.message }));
-    }
-    return httpJson(
-      "GET",
-      `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger/status`,
-    ).catch((error) => ({ ok: false, error: error.message }));
-  }
-
-  function captureSegmentsForVoyage(status, voyage, captureStop) {
-    const byName = new Map();
-    const range = voyageCaptureRange(voyage);
-    for (const segment of Array.isArray(status?.captures) ? status.captures : []) {
-      if (!segment?.fileName) continue;
-      if (captureSegmentOverlaps(segment, range)) {
-        rememberCaptureSegment(byName, segment);
-      }
-    }
-    [captureStop?.recording, voyage.ajrmMarineLogger?.recording, voyage.ajrmMarineLogger].forEach((segment) => {
-      if (!segment?.fileName) return;
-      if (captureSegmentOverlaps(segment, range)) rememberCaptureSegment(byName, segment);
-    });
-    return Array.from(byName.values()).sort((left, right) =>
-      String(left.from || left.startedAt || left.fileName).localeCompare(
-        String(right.from || right.startedAt || right.fileName),
-      ),
-    );
-  }
-
-  function rememberCaptureSegment(segmentsByKey, segment) {
-    const key = logicalCaptureFileName(segment.fileName);
-    const existing = segmentsByKey.get(key);
-    if (!existing || shouldPreferCaptureSegment(segment, existing)) {
-      segmentsByKey.set(key, segment);
-    }
-  }
-
-  function logicalCaptureFileName(fileName) {
-    return String(fileName || "").replace(/\.gz$/i, "");
-  }
-
-  function shouldPreferCaptureSegment(candidate, existing) {
-    const candidateCompressed = candidate?.compressed === true || String(candidate?.fileName || "").endsWith(".gz");
-    const existingCompressed = existing?.compressed === true || String(existing?.fileName || "").endsWith(".gz");
-    if (candidateCompressed !== existingCompressed) return candidateCompressed;
-    const candidateTo = Date.parse(candidate?.to || candidate?.modifiedAt || "");
-    const existingTo = Date.parse(existing?.to || existing?.modifiedAt || "");
-    const candidateFrom = Date.parse(candidate?.from || candidate?.startedAt || "");
-    const existingFrom = Date.parse(existing?.from || existing?.startedAt || "");
-    if (
-      Number.isFinite(candidateFrom) &&
-      Number.isFinite(existingFrom) &&
-      candidateFrom !== existingFrom &&
-      sameCaptureSegmentEnd(candidateTo, existingTo)
-    ) {
-      return candidateFrom < existingFrom;
-    }
-    if (Number.isFinite(candidateTo) && Number.isFinite(existingTo) && candidateTo !== existingTo) {
-      return candidateTo > existingTo;
-    }
-    return Number(candidate?.bytes || candidate?.size || 0) > Number(existing?.bytes || existing?.size || 0);
-  }
-
-  function sameCaptureSegmentEnd(leftMs, rightMs) {
-    if (!Number.isFinite(leftMs) || !Number.isFinite(rightMs)) return false;
-    return Math.abs(leftMs - rightMs) <= 5000;
-  }
-
-  function voyageCaptureRange(voyage) {
-    const captureStart = voyage.ajrmMarineLogger?.recording?.from || voyage.startedAt;
-    return {
-      fromMs: Date.parse(captureStart),
-      toMs: Date.parse(voyage.stoppedAt || new Date().toISOString()),
-    };
-  }
-
-  function captureSegmentOverlaps(segment, range) {
-    const fromMs = Date.parse(segment.from || segment.startedAt || recordingStartedAtFromFileName(segment.fileName));
-    const toMs = Date.parse(segment.to || segment.modifiedAt || segment.from || segment.startedAt || "");
-    if (!Number.isFinite(fromMs)) return true;
-    const segmentToMs = Number.isFinite(toMs) ? toMs : fromMs;
-    return segmentToMs >= range.fromMs && fromMs <= range.toMs;
-  }
-
   async function writeVoyageIndex(voyage) {
     const files = (await listFiles(voyage.directory))
       .filter((entry) => entry.path !== "index.json");
-    const captureIndex = await buildCaptureIndex(voyage);
     const index = {
       id: voyage.id,
       version: packageInfo.version,
@@ -3095,7 +2442,6 @@ module.exports = function ajrmMarineCapture(app) {
       stopReason: voyage.stopReason,
       snapshotCount: voyage.snapshotCount,
       captureMode: voyage.captureMode || options.captureMode,
-      captureFileMode: voyage.captureFileMode || options.captureFileMode,
       recomputedReplay: voyage.recomputedReplay || null,
       incomplete: voyage.incomplete === true,
       recomputationVerified: voyage.recomputedReplay
@@ -3107,14 +2453,11 @@ module.exports = function ajrmMarineCapture(app) {
       recoveredAt: voyage.recoveredAt || null,
       canonicalInput: voyage.canonicalInput || null,
       recomputedOutput: voyage.recomputedOutput || null,
-      captureFiles: voyage.captureFiles || [],
-      captureReferences: voyage.captureReferences || [],
       observations: publicObservationLog(voyage.observations),
       routeAtStart: voyage.routeAtStart || null,
       selectedRoute: voyage.selectedRoute || null,
       routeSelections: voyage.routeSelections || [],
       drTrack: voyage.drTrack || null,
-      captureIndex,
       events: voyage.events,
       fileInventory: {
         contract: "ajrm-marine-voyage-payload-inventory-v1",
@@ -3129,7 +2472,7 @@ module.exports = function ajrmMarineCapture(app) {
         "Read snapshots/start and snapshots/stop before opening large voyage streams.",
         `Read ${OBSERVATIONS_RELATIVE_PATH} for timestamped skipper observations; optional structured Snapshot evidence is referenced from each observation.`,
         `For a recomputed child, ${PARENT_OBSERVATIONS_RELATIVE_PATH} is lineage copied from the parent and is not counted as a child observation. Verified parent Snapshot evidence stays in the named parent voyage and lineage records contain no dangling child paths.`,
-        "Use snapshot timestamps and capture metadata to locate interesting intervals.",
+        "Use snapshot timestamps and canonical recording metadata to locate interesting intervals.",
         `${INPUT_RELATIVE_PATH} is the only replayable input and contains explicitly sourced physical updates on one monotonic elapsedMs timeline.`,
         `${RECOMPUTED_OUTPUT_RELATIVE_PATH} is output evidence only and must never be replayed as physical input.`,
         voyage.recomputedReplay?.incomplete === true
@@ -3142,172 +2485,6 @@ module.exports = function ajrmMarineCapture(app) {
     const indexPath = path.join(voyage.directory, "index.json");
     await writeJson(indexPath, index);
     return index;
-  }
-
-  async function buildCaptureIndex(voyage) {
-    return buildCaptureIndexForDirectory(
-      voyage.directory,
-      voyage.captureFiles || [],
-      {
-        tolerateReadErrors: voyage.incomplete === true,
-      },
-    );
-  }
-
-  async function summarizeCaptureFile(filePath, fileName) {
-    const summary = {
-      fileName,
-      error: null,
-      records: 0,
-      duplicateRecordsInSample: 0,
-      outOfOrderRecords: 0,
-      firstTimestamp: null,
-      lastTimestamp: null,
-      contexts: {},
-      sources: {},
-      paths: {},
-      trafficProjectionSessions: {},
-      trafficProjectionSequence: {},
-      sampleTimeline: [],
-    };
-    if (!fs.existsSync(filePath)) {
-      summary.error = "capture file not found";
-      return summary;
-    }
-    const seen = new Set();
-    let lastTimestampMs = null;
-    const input = fs.createReadStream(filePath);
-    const stream = fileName.endsWith(".gz") ? input.pipe(zlib.createGunzip()) : input;
-    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (!line) continue;
-      summary.records += 1;
-      if (seen.has(line)) summary.duplicateRecordsInSample += 1;
-      else if (seen.size < 20000) seen.add(line);
-      let record;
-      try {
-        record = JSON.parse(line);
-      } catch (_error) {
-        continue;
-      }
-      const delta = record.delta || record;
-      const timestamp = recordTimestamp(record, delta);
-      const timestampMs = Date.parse(timestamp);
-      if (Number.isFinite(timestampMs)) {
-        if (lastTimestampMs !== null && timestampMs < lastTimestampMs) {
-          summary.outOfOrderRecords += 1;
-        }
-        lastTimestampMs = timestampMs;
-        if (!summary.firstTimestamp || timestampMs < Date.parse(summary.firstTimestamp)) {
-          summary.firstTimestamp = timestamp;
-        }
-        if (!summary.lastTimestamp || timestampMs > Date.parse(summary.lastTimestamp)) {
-          summary.lastTimestamp = timestamp;
-        }
-        if (summary.sampleTimeline.length < 200) {
-          summary.sampleTimeline.push({ timestamp, timestampMs, file: fileName, line: summary.records });
-        }
-      }
-      increment(summary.contexts, delta.context);
-      for (const update of delta.updates || []) {
-        increment(summary.sources, update.$source);
-        for (const value of update.values || []) {
-          const valuePath = value.path;
-          increment(summary.paths, valuePath);
-          indexTrafficProjectionSequence(summary, valuePath, value.value);
-        }
-      }
-    }
-    summary.contexts = topCounts(summary.contexts, 20);
-    summary.sources = topCounts(summary.sources, 20);
-    summary.paths = topCounts(summary.paths, 50);
-    return summary;
-  }
-
-  function recordTimestamp(record, delta) {
-    let best = Date.parse(record.capturedAt);
-    let bestText = record.capturedAt || null;
-    for (const update of delta.updates || []) {
-      const timestamp = update.timestamp || record.capturedAt;
-      const timestampMs = Date.parse(timestamp);
-      if (!Number.isFinite(timestampMs)) continue;
-      if (!Number.isFinite(best) || timestampMs < best) {
-        best = timestampMs;
-        bestText = timestamp;
-      }
-    }
-    return bestText || null;
-  }
-
-  function increment(counts, key) {
-    if (!key) return;
-    counts[key] = (counts[key] || 0) + 1;
-  }
-
-  function topCounts(counts, limit) {
-    return Object.fromEntries(
-      Object.entries(counts)
-        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-        .slice(0, limit),
-    );
-  }
-
-  function trafficProjectionSequenceTotal(fileSummary, field) {
-    return Object.values(fileSummary.trafficProjectionSequence || {}).reduce(
-      (sum, sequenceSummary) => sum + Number(sequenceSummary[field] || 0),
-      0,
-    );
-  }
-
-  function indexTrafficProjectionSequence(summary, valuePath, value) {
-    if (!valuePath?.startsWith?.("plugins.ajrmMarineTraffic") || !value || typeof value !== "object") {
-      return;
-    }
-    const sessionId = value.sessionId || "unknown";
-    summary.trafficProjectionSessions[sessionId] = (summary.trafficProjectionSessions[sessionId] || 0) + 1;
-    if (!Number.isFinite(value.sequence)) return;
-    const sequenceKey = `${valuePath}:${sessionId}`;
-    const generatedAtMs = Date.parse(value.generatedAt || "");
-    const state = summary.trafficProjectionSequence[sequenceKey] || {
-      path: valuePath,
-      sessionId,
-      first: value.sequence,
-      last: value.sequence,
-      min: value.sequence,
-      max: value.sequence,
-      count: 0,
-      fileOrderRewinds: 0,
-      sequenceRegressions: 0,
-      nonMonotonic: 0,
-      lastGeneratedAt: value.generatedAt || null,
-      lastGeneratedAtMs: Number.isFinite(generatedAtMs) ? generatedAtMs : null,
-      lastSequenceInGeneratedOrder: value.sequence,
-    };
-    const generatedAtWentBackwards =
-      Number.isFinite(generatedAtMs) &&
-      Number.isFinite(state.lastGeneratedAtMs) &&
-      generatedAtMs < state.lastGeneratedAtMs;
-    if (generatedAtWentBackwards) {
-      state.fileOrderRewinds += 1;
-    } else {
-      const previousSequence = Number.isFinite(state.lastSequenceInGeneratedOrder)
-        ? state.lastSequenceInGeneratedOrder
-        : state.last;
-      if (value.sequence < previousSequence) {
-        state.sequenceRegressions += 1;
-      }
-      if (Number.isFinite(generatedAtMs)) {
-        state.lastGeneratedAt = value.generatedAt || state.lastGeneratedAt;
-        state.lastGeneratedAtMs = generatedAtMs;
-      }
-      state.lastSequenceInGeneratedOrder = value.sequence;
-    }
-    state.nonMonotonic = state.sequenceRegressions;
-    state.last = value.sequence;
-    state.min = Math.min(state.min, value.sequence);
-    state.max = Math.max(state.max, value.sequence);
-    state.count += 1;
-    summary.trafficProjectionSequence[sequenceKey] = state;
   }
 
   async function bundleVoyage(voyage) {
@@ -3356,64 +2533,6 @@ module.exports = function ajrmMarineCapture(app) {
     }
   }
 
-  async function callAjrmMarineLogger(route, body) {
-    const ajrmMarineLoggerApi = getAjrmMarineLoggerApi();
-    if (ajrmMarineLoggerApi) {
-      if (route === "/capture/start" && typeof ajrmMarineLoggerApi.startCapture === "function") {
-        const recording = await ajrmMarineLoggerApi.startCapture(body || {});
-        return { ok: true, recording };
-      }
-      if (route === "/capture/stop" && typeof ajrmMarineLoggerApi.stopCapture === "function") {
-        const recording = await ajrmMarineLoggerApi.stopCapture("voyage capture stopped");
-        return { ok: true, recording };
-      }
-      if (
-        route === "/playback/result-capture/start" &&
-        typeof ajrmMarineLoggerApi.startReplayResultCapture === "function"
-      ) {
-        const recording = await ajrmMarineLoggerApi.startReplayResultCapture(body || {});
-        return { ok: true, recording };
-      }
-      if (
-        route === "/playback/result-capture/stop" &&
-        typeof ajrmMarineLoggerApi.stopReplayResultCapture === "function"
-      ) {
-        const recording = await ajrmMarineLoggerApi.stopReplayResultCapture(
-          "recomputed replay voyage stopped",
-        );
-        return { ok: true, recording };
-      }
-      if (
-        route === "/playback/result-capture/abort" &&
-        typeof ajrmMarineLoggerApi.abortReplayResultCapture === "function"
-      ) {
-        const recording = await ajrmMarineLoggerApi.abortReplayResultCapture(
-          body?.reason || "recomputed replay capture aborted",
-        );
-        return { ok: true, recording };
-      }
-      if (
-        route === "/playback/play" &&
-        typeof ajrmMarineLoggerApi.startPlayback === "function"
-      ) {
-        const playback = await ajrmMarineLoggerApi.startPlayback(
-          body?.rate ?? 1,
-        );
-        return { ok: true, playback };
-      }
-      if (
-        route === "/playback/result-capture/stop" &&
-        typeof ajrmMarineLoggerApi.stopCapture === "function"
-      ) {
-        const recording = await ajrmMarineLoggerApi.stopCapture(
-          "recomputed replay voyage stopped",
-        );
-        return { ok: true, recording };
-      }
-    }
-    return httpJson("POST", `${options.signalKBaseUrl}/plugins/signalk-ajrm-marine-logger${route}`, body);
-  }
-
   async function buildStatus() {
     refreshNavigationContextFromSelfPath();
     return {
@@ -3448,7 +2567,6 @@ module.exports = function ajrmMarineCapture(app) {
         minFreeDiskGb: options.minFreeDiskGb,
       },
       captureMode: options.captureMode,
-      captureFileMode: "portable",
       canonicalInputContract: INPUT_CONTRACT,
       replayContract: REPLAY_CONTRACT,
       inputSourcePrefixes: options.inputSourcePrefixes,
@@ -3761,7 +2879,6 @@ module.exports = function ajrmMarineCapture(app) {
       snapshotCount: voyage.snapshotCount,
       observationLog: publicObservationLog(voyage.observations),
       captureMode: voyage.captureMode || options.captureMode,
-      captureFileMode: voyage.captureFileMode || options.captureFileMode,
       recomputedReplay: voyage.recomputedReplay || null,
       routeAtStart: voyage.routeAtStart || null,
       selectedRoute: voyage.selectedRoute || null,
@@ -4352,223 +3469,6 @@ function booleanOrNull(value) {
   return typeof value === "boolean" ? value : null;
 }
 
-async function buildCaptureIndexForDirectory(
-  bundleDirectory,
-  captureFiles,
-  indexOptions = {},
-) {
-  const files = [];
-  const allRecords = [];
-  for (const fileName of captureFiles || []) {
-    const filePath = path.join(bundleDirectory, "capture", fileName);
-    let summary;
-    try {
-      summary = await summarizeCaptureFileForIndex(filePath, fileName);
-    } catch (error) {
-      if (indexOptions.tolerateReadErrors !== true) throw error;
-      summary = {
-        fileName,
-        error: `Incomplete replay evidence could not be decoded: ${String(
-          error?.message || error,
-        ).slice(0, 500)}`,
-        records: 0,
-        duplicateRecordsInSample: 0,
-        outOfOrderRecords: 0,
-        firstTimestamp: null,
-        lastTimestamp: null,
-        contexts: {},
-        sources: {},
-        paths: {},
-        trafficProjectionSessions: {},
-        trafficProjectionSequence: {},
-        sampleTimeline: [],
-      };
-    }
-    files.push(summary);
-    allRecords.push(...summary.sampleTimeline);
-    delete summary.sampleTimeline;
-  }
-  const sortedSamples = allRecords
-    .sort((left, right) => left.timestampMs - right.timestampMs || left.file.localeCompare(right.file) || left.line - right.line)
-    .slice(0, 200);
-  return {
-    schema: "ajrm-marine-capture-index-v1",
-    sortKey: "delta.updates[].timestamp, fallback capturedAt",
-    files,
-    sortedSample: sortedSamples.map(({ timestampMs, ...entry }) => entry),
-    totals: {
-      records: files.reduce((sum, file) => sum + file.records, 0),
-      duplicateRecordsInSample: files.reduce((sum, file) => sum + file.duplicateRecordsInSample, 0),
-      outOfOrderRecords: files.reduce((sum, file) => sum + file.outOfOrderRecords, 0),
-      trafficProjectionFileOrderRewinds: files.reduce((sum, file) => sum + trafficProjectionSequenceTotalForIndex(file, "fileOrderRewinds"), 0),
-      trafficProjectionSequenceRegressions: files.reduce((sum, file) => sum + trafficProjectionSequenceTotalForIndex(file, "sequenceRegressions"), 0),
-    },
-    notes: [
-      "Raw capture files are preserved exactly as AJRM Marine Logger wrote them.",
-      "Analyse by update timestamp rather than file order when backfill is present.",
-      "Duplicate counts are based on exact repeated JSON lines within the bounded per-file sample.",
-      "Traffic projection fileOrderRewinds mean older generatedAt records appeared after newer records, usually because of backfill or overlapping logger files. trafficProjectionSequenceRegressions are the count to investigate as possible Traffic projection sequence faults.",
-    ],
-  };
-}
-
-async function summarizeCaptureFileForIndex(filePath, fileName) {
-  const summary = {
-    fileName,
-    error: null,
-    records: 0,
-    duplicateRecordsInSample: 0,
-    outOfOrderRecords: 0,
-    firstTimestamp: null,
-    lastTimestamp: null,
-    contexts: {},
-    sources: {},
-    paths: {},
-    trafficProjectionSessions: {},
-    trafficProjectionSequence: {},
-    sampleTimeline: [],
-  };
-  if (!fs.existsSync(filePath)) {
-    summary.error = "capture file not found";
-    return summary;
-  }
-  const seen = new Set();
-  let lastTimestampMs = null;
-  const input = fs.createReadStream(filePath);
-  const stream = fileName.endsWith(".gz") ? input.pipe(zlib.createGunzip()) : input;
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line) continue;
-    summary.records += 1;
-    if (seen.has(line)) summary.duplicateRecordsInSample += 1;
-    else if (seen.size < 20000) seen.add(line);
-    let record;
-    try {
-      record = JSON.parse(line);
-    } catch (_error) {
-      continue;
-    }
-    const delta = record.delta || record;
-    const timestamp = recordTimestampForIndex(record, delta);
-    const timestampMs = Date.parse(timestamp);
-    if (Number.isFinite(timestampMs)) {
-      if (lastTimestampMs !== null && timestampMs < lastTimestampMs) {
-        summary.outOfOrderRecords += 1;
-      }
-      lastTimestampMs = timestampMs;
-      if (!summary.firstTimestamp || timestampMs < Date.parse(summary.firstTimestamp)) {
-        summary.firstTimestamp = timestamp;
-      }
-      if (!summary.lastTimestamp || timestampMs > Date.parse(summary.lastTimestamp)) {
-        summary.lastTimestamp = timestamp;
-      }
-      if (summary.sampleTimeline.length < 200) {
-        summary.sampleTimeline.push({ timestamp, timestampMs, file: fileName, line: summary.records });
-      }
-    }
-    incrementForIndex(summary.contexts, delta.context);
-    for (const update of delta.updates || []) {
-      incrementForIndex(summary.sources, update.$source);
-      for (const value of update.values || []) {
-        const valuePath = value.path;
-        incrementForIndex(summary.paths, valuePath);
-        indexTrafficProjectionSequenceForIndex(summary, valuePath, value.value);
-      }
-    }
-  }
-  summary.contexts = topCountsForIndex(summary.contexts, 20);
-  summary.sources = topCountsForIndex(summary.sources, 20);
-  summary.paths = topCountsForIndex(summary.paths, 50);
-  return summary;
-}
-
-function recordTimestampForIndex(record, delta) {
-  let best = Date.parse(record.capturedAt);
-  let bestText = record.capturedAt || null;
-  for (const update of delta.updates || []) {
-    const timestamp = update.timestamp || record.capturedAt;
-    const timestampMs = Date.parse(timestamp);
-    if (!Number.isFinite(timestampMs)) continue;
-    if (!Number.isFinite(best) || timestampMs < best) {
-      best = timestampMs;
-      bestText = timestamp;
-    }
-  }
-  return bestText || null;
-}
-
-function incrementForIndex(counts, key) {
-  if (!key) return;
-  counts[key] = (counts[key] || 0) + 1;
-}
-
-function topCountsForIndex(counts, limit) {
-  return Object.fromEntries(
-    Object.entries(counts)
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .slice(0, limit),
-  );
-}
-
-function trafficProjectionSequenceTotalForIndex(fileSummary, field) {
-  return Object.values(fileSummary.trafficProjectionSequence || {}).reduce(
-    (sum, sequenceSummary) => sum + Number(sequenceSummary[field] || 0),
-    0,
-  );
-}
-
-function indexTrafficProjectionSequenceForIndex(summary, valuePath, value) {
-  if (!valuePath?.startsWith?.("plugins.ajrmMarineTraffic") || !value || typeof value !== "object") {
-    return;
-  }
-  const sessionId = value.sessionId || "unknown";
-  summary.trafficProjectionSessions[sessionId] = (summary.trafficProjectionSessions[sessionId] || 0) + 1;
-  if (!Number.isFinite(value.sequence)) return;
-  const sequenceKey = `${valuePath}:${sessionId}`;
-  const generatedAtMs = Date.parse(value.generatedAt || "");
-  const state = summary.trafficProjectionSequence[sequenceKey] || {
-    path: valuePath,
-    sessionId,
-    first: value.sequence,
-    last: value.sequence,
-    min: value.sequence,
-    max: value.sequence,
-    count: 0,
-    fileOrderRewinds: 0,
-    sequenceRegressions: 0,
-    nonMonotonic: 0,
-    lastGeneratedAt: value.generatedAt || null,
-    lastGeneratedAtMs: Number.isFinite(generatedAtMs) ? generatedAtMs : null,
-    lastSequenceInGeneratedOrder: value.sequence,
-  };
-  const generatedAtWentBackwards =
-    Number.isFinite(generatedAtMs) &&
-    Number.isFinite(state.lastGeneratedAtMs) &&
-    generatedAtMs < state.lastGeneratedAtMs;
-  if (generatedAtWentBackwards) {
-    state.fileOrderRewinds += 1;
-  } else {
-    const previousSequence = Number.isFinite(state.lastSequenceInGeneratedOrder)
-      ? state.lastSequenceInGeneratedOrder
-      : state.last;
-    if (value.sequence < previousSequence) {
-      state.sequenceRegressions += 1;
-    }
-    if (Number.isFinite(generatedAtMs)) {
-      state.lastGeneratedAt = value.generatedAt || state.lastGeneratedAt;
-      state.lastGeneratedAtMs = generatedAtMs;
-    }
-    state.lastSequenceInGeneratedOrder = value.sequence;
-  }
-  if (value.sequence < state.last) state.nonMonotonic += 1;
-  state.first = Math.min(state.first, value.sequence);
-  state.last = value.sequence;
-  state.min = Math.min(state.min, value.sequence);
-  state.max = Math.max(state.max, value.sequence);
-  state.count += 1;
-  summary.trafficProjectionSequence[sequenceKey] = state;
-}
-
 function sanitizeRouteSelection(value) {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object") throw new Error("Route selection must be an object or null");
@@ -4614,50 +3514,6 @@ function normalizeRouteTimeline(value) {
       selection: sanitizeRouteSelection(record?.selection),
     }))
     .sort((left, right) => left.voyageElapsedMs - right.voyageElapsedMs);
-}
-
-function httpJson(method, url, body) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const transport = parsed.protocol === "https:" ? https : http;
-    const payload = body ? Buffer.from(JSON.stringify(body)) : null;
-    const request = transport.request(
-      parsed,
-      {
-        method,
-        rejectUnauthorized: false,
-        timeout: 10000,
-        headers: payload
-          ? {
-              "content-type": "application/json",
-              "content-length": String(payload.length),
-            }
-          : {},
-      },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
-        response.on("end", () => {
-          const text = Buffer.concat(chunks).toString("utf8");
-          let parsedBody = {};
-          try {
-            parsedBody = text ? JSON.parse(text) : {};
-          } catch {
-            parsedBody = { raw: text };
-          }
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(parsedBody.error || `HTTP ${response.statusCode}`));
-            return;
-          }
-          resolve(parsedBody);
-        });
-      },
-    );
-    request.on("timeout", () => request.destroy(new Error("request timed out")));
-    request.on("error", reject);
-    if (payload) request.write(payload);
-    request.end();
-  });
 }
 
 async function listVoyageBundlesInDirectory(directory) {
@@ -4777,201 +3633,6 @@ async function readVoyageZipIndex(filePath) {
   });
 }
 
-async function buildPortableDownloadBundle(
-  sourceZipPath,
-  fileName,
-  stagingRoot = os.tmpdir(),
-) {
-  const index = await readVoyageZipIndex(sourceZipPath);
-  if (voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index)) {
-    return null;
-  }
-  const references = Array.isArray(index?.captureReferences) ? index.captureReferences : [];
-  if (!references.length) return null;
-  await fs.promises.mkdir(stagingRoot, { recursive: true });
-  let directory = null;
-  try {
-    directory = await fs.promises.mkdtemp(
-      path.join(stagingRoot, PORTABLE_DOWNLOAD_DIRECTORY_PREFIX),
-    );
-    const workDir = path.join(directory, "bundle");
-    const outputPath = path.join(directory, fileName);
-    await fs.promises.mkdir(workDir, { recursive: true });
-    extractZipToDirectory(sourceZipPath, workDir);
-    await fs.promises.mkdir(path.join(workDir, "capture"), { recursive: true });
-    const portableIndexPath = path.join(workDir, "index.json");
-    const portableIndex = await readJson(portableIndexPath) || index;
-    const copiedReferences = [];
-    const embeddedCaptureFiles = await listPortableCaptureFiles(workDir);
-    const copiedNames = new Set(embeddedCaptureFiles);
-    const missingReferences = [];
-    for (const reference of references) {
-      const embeddedName = embeddedCaptureFiles.find(
-        (candidate) =>
-          logicalCaptureFileNameForDownload(candidate) ===
-          logicalCaptureFileNameForDownload(reference?.fileName),
-      );
-      if (embeddedName) {
-        const embeddedInfo = await fs.promises.stat(
-          path.join(workDir, "capture", embeddedName),
-        );
-        copiedReferences.push({
-          fileName: embeddedName,
-          bytes: embeddedInfo.size,
-        });
-        continue;
-      }
-      const copied = await copyCaptureReferenceForDownload(
-        reference,
-        path.join(workDir, "capture"),
-        copiedNames,
-      );
-      if (copied) copiedReferences.push(copied);
-      else missingReferences.push(reference.fileName || reference.sourcePath || "unknown");
-    }
-    const captureFiles = await listPortableCaptureFiles(workDir);
-    if (!captureFiles.length || missingReferences.length) {
-      const unavailable = missingReferences.length || references.length;
-      throw new Error(
-        `Cannot prepare a complete portable voyage: ${unavailable} AJRM Marine Logger capture reference${unavailable === 1 ? "" : "s"} unavailable`,
-      );
-    }
-    portableIndex.originalCaptureFileMode = portableIndex.captureFileMode || "reference";
-    portableIndex.captureFileMode = "portable-download";
-    portableIndex.captureFiles = captureFiles;
-    portableIndex.captureIndex = await buildCaptureIndexForDirectory(workDir, captureFiles);
-    reconcilePortableCaptureReferences(portableIndex, copiedReferences);
-    rewritePortableDownloadEvents(portableIndex, copiedReferences, missingReferences);
-    portableIndex.portableDownload = {
-      createdAt: new Date().toISOString(),
-      copiedCaptureFiles: captureFiles.length,
-      copiedCaptureBytes: copiedReferences.reduce((sum, reference) => sum + Number(reference.bytes || 0), 0),
-      missingReferences,
-    };
-    portableIndex.hints = [
-      ...(Array.isArray(portableIndex.hints) ? portableIndex.hints.filter((hint) => !String(hint).includes("captureFileMode is reference")) : []),
-      "This download was rebuilt on demand from a reference-mode voyage bundle. Copied raw AJRM Marine Logger files are in capture/ when they were still present on this server.",
-    ];
-    await writeJson(portableIndexPath, portableIndex);
-    await writeDirectoryZip(outputPath, workDir);
-    return { path: outputPath, directory };
-  } catch (error) {
-    if (directory) {
-      await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
-    }
-    throw error;
-  }
-}
-
-async function cleanupPortableDownloadWorkspaces(parentDirectories) {
-  let removed = 0;
-  for (const parentDirectory of new Set(parentDirectories.filter(Boolean))) {
-    const entries = await fs.promises.readdir(parentDirectory, {
-      withFileTypes: true,
-    }).catch(() => []);
-    for (const entry of entries) {
-      if (
-        !entry.isDirectory() ||
-        !new RegExp(
-          `^${PORTABLE_DOWNLOAD_DIRECTORY_PREFIX}[A-Za-z0-9]{6}$`,
-        ).test(entry.name)
-      ) {
-        continue;
-      }
-      await fs.promises.rm(path.join(parentDirectory, entry.name), {
-        recursive: true,
-        force: true,
-      });
-      removed += 1;
-    }
-  }
-  return removed;
-}
-
-function voyageZipContainsDeclaredCaptureFiles(sourceZipPath, index) {
-  const captureFiles = Array.isArray(index?.captureFiles)
-    ? index.captureFiles
-    : [];
-  if (!captureFiles.length) return false;
-  const declaredLogicalNames = new Set(
-    captureFiles.map((fileName) =>
-      logicalCaptureFileNameForDownload(path.basename(String(fileName || ""))),
-    ),
-  );
-  const references = Array.isArray(index?.captureReferences)
-    ? index.captureReferences
-    : [];
-  if (
-    references.some(
-      (reference) =>
-        !declaredLogicalNames.has(
-          logicalCaptureFileNameForDownload(reference?.fileName),
-        ),
-    )
-  ) {
-    return false;
-  }
-  try {
-    const zip = new AdmZip(sourceZipPath);
-    return captureFiles.every((fileName) => {
-      const entryName = portableCaptureEntryName(fileName);
-      const entry = entryName ? zip.getEntry(entryName) : null;
-      return Boolean(
-        entry &&
-        !entry.isDirectory &&
-        Number(entry.header?.size || 0) > 0,
-      );
-    });
-  } catch {
-    return false;
-  }
-}
-
-function portableCaptureEntryName(fileName) {
-  const normalized = String(fileName || "")
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "");
-  if (
-    !normalized ||
-    normalized.split("/").includes("..") ||
-    !/\.jsonl(?:\.gz)?$/i.test(normalized)
-  ) {
-    return null;
-  }
-  return normalized.startsWith("capture/")
-    ? normalized
-    : `capture/${normalized}`;
-}
-
-async function listPortableCaptureFiles(workDir) {
-  const captureDirectory = path.join(workDir, "capture");
-  const entries = await fs.promises.readdir(captureDirectory, {
-    withFileTypes: true,
-  }).catch(() => []);
-  return entries
-    .filter(
-      (entry) =>
-        entry.isFile() &&
-        /\.jsonl(?:\.gz)?$/i.test(entry.name),
-    )
-    .map((entry) => entry.name)
-    .sort((left, right) => left.localeCompare(right));
-}
-
-function extractZipToDirectory(filePath, directory) {
-  const zip = new AdmZip(filePath);
-  for (const entry of zip.getEntries()) {
-    if (unsafeZipEntryName(entry.entryName)) {
-      throw new Error(`unsafe archive path: ${entry.entryName}`);
-    }
-  }
-  zip.extractAllTo(directory, true);
-}
-
-function unsafeZipEntryName(entryName) {
-  return path.isAbsolute(entryName) || entryName.split(/[\\/]+/).includes("..");
-}
-
 async function writeDirectoryZip(zipPath, rootDir, { onProgress } = {}) {
   const files = await listFilesForStreamingZip(rootDir);
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
@@ -5075,84 +3736,6 @@ async function listFilesForStreamingZip(rootDir) {
   return files;
 }
 
-function reconcilePortableCaptureReferences(index, copiedReferences = []) {
-  const summariesByLogicalName = new Map();
-  for (const summary of index?.captureIndex?.files || []) {
-    if (!summary?.fileName) continue;
-    summariesByLogicalName.set(logicalCaptureFileNameForDownload(summary.fileName), summary);
-  }
-  if (!summariesByLogicalName.size || !Array.isArray(index.captureReferences)) return;
-  const copiedByLogicalName = new Map(
-    copiedReferences.map((reference) => [logicalCaptureFileNameForDownload(reference.fileName), reference]),
-  );
-  index.captureReferences = index.captureReferences.map((reference) => {
-    const summary = summariesByLogicalName.get(logicalCaptureFileNameForDownload(reference?.fileName));
-    if (!summary) return reference;
-    const copied = copiedByLogicalName.get(logicalCaptureFileNameForDownload(summary.fileName));
-    return {
-      ...reference,
-      fileName: summary.fileName,
-      sourcePath: `capture/${summary.fileName}`,
-      compressedSourcePath: "",
-      from: summary.firstTimestamp || reference.from || null,
-      to: summary.lastTimestamp || reference.to || null,
-      compressed: summary.fileName.endsWith(".gz"),
-      bytes: copied?.bytes ?? reference.bytes ?? null,
-      records: summary.records,
-    };
-  });
-}
-
-async function copyCaptureReferenceForDownload(reference, captureDirectory, copiedNames) {
-  const candidates = [
-    reference?.sourcePath,
-    reference?.compressedSourcePath,
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    const info = await fs.promises.stat(candidate).catch(() => null);
-    if (!info?.isFile()) continue;
-    const fileName = path.basename(candidate);
-    if (copiedNames.has(fileName)) return { fileName, bytes: info.size };
-    const targetPath = path.join(captureDirectory, fileName);
-    await fs.promises.copyFile(candidate, targetPath);
-    copiedNames.add(fileName);
-    return { fileName, bytes: info.size };
-  }
-  return null;
-}
-
-function logicalCaptureFileNameForDownload(fileName) {
-  return String(fileName || "").replace(/\.gz$/i, "");
-}
-
-function rewritePortableDownloadEvents(index, copiedReferences = [], missingReferences = []) {
-  const copiedCount = copiedReferences.length;
-  const missingCount = missingReferences.length;
-  const replacementMessage = copiedCount
-    ? `${copiedCount} AJRM Marine Logger segment${copiedCount === 1 ? "" : "s"} copied into portable download`
-    : "AJRM Marine Logger segments could not be copied into portable download";
-  const replacement = {
-    at: new Date().toISOString(),
-    type: copiedCount ? "capture-copied-portable-download" : "capture-copy-warning",
-    message: missingCount
-      ? `${replacementMessage}; ${missingCount} missing reference${missingCount === 1 ? "" : "s"}`
-      : replacementMessage,
-  };
-  const events = Array.isArray(index.events) ? index.events : [];
-  const rewritten = events.map((event) => {
-    if (event?.type !== "capture-referenced") return event;
-    return {
-      ...event,
-      type: replacement.type,
-      message: replacement.message,
-    };
-  });
-  if (!rewritten.some((event) => event?.type === replacement.type && event?.message === replacement.message)) {
-    rewritten.unshift(replacement);
-  }
-  index.events = rewritten;
-}
-
 async function readJson(filePath) {
   try {
     return JSON.parse(await fs.promises.readFile(filePath, "utf8"));
@@ -5166,16 +3749,6 @@ async function countFiles(directory, extension) {
   return entries.filter((entry) =>
     entry.isFile() && (!extension || entry.name.endsWith(extension)),
   ).length;
-}
-
-async function listCaptureFileNames(directory) {
-  const entries = await fs.promises.readdir(directory, { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) =>
-      entry.isFile() && /\.(jsonl|jsonl\.gz)$/i.test(entry.name),
-    )
-    .map((entry) => entry.name)
-    .sort((left, right) => left.localeCompare(right));
 }
 
 async function readDiskStatus(pathName) {
@@ -5410,17 +3983,6 @@ function startedAtFromVoyageId(id) {
   return `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
 }
 
-function recordingStartedAtFromFileName(fileName) {
-  const match = String(fileName || "").match(/^capture-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/);
-  if (!match) return "";
-  const [, year, month, day, hour, minute, second, ms] = match;
-  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}Z`;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function safeFilePart(value) {
   return String(value || "event").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-|-$/g, "") || "event";
 }
@@ -5480,10 +4042,8 @@ function idlePlaybackStatus() {
 }
 
 module.exports._private = {
-  buildPortableDownloadBundle,
   biteReportOverlapsVoyage,
   cleanHarbourName,
-  cleanupPortableDownloadWorkspaces,
   compareVoyageBundlesNewestFirst,
   defaultVoyageComment,
   drTrackSample,
@@ -5494,10 +4054,8 @@ module.exports._private = {
   normalizeTrafficProfile,
   parseObservationRecords,
   publicObservationLog,
-  reconcilePortableCaptureReferences,
   recomputedReplayVerification,
   resetMovementGateForVoyageStart,
-  rewritePortableDownloadEvents,
   sanitizeRouteSelection,
   speedKnotsFromMps,
   writeDirectoryZip,

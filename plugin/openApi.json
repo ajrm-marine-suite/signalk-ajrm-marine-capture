@@ -1,0 +1,55 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "AJRM Marine Capture",
+    "version": "0.8.0",
+    "description": "Canonical voyage recording, replay, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
+  },
+  "paths": {
+    "/status": {
+      "get": { "summary": "Return recorder, replay, finalisation and storage status", "responses": { "200": { "description": "Capture status" } } }
+    },
+    "/voyages": {
+      "get": { "summary": "List current canonical voyage bundles", "responses": { "200": { "description": "Voyage list" } } }
+    },
+    "/voyages/{file}/download": {
+      "get": {
+        "summary": "Download a voyage ZIP as a stream",
+        "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Voyage ZIP" }, "404": { "description": "Voyage not found" } }
+      }
+    },
+    "/voyages/{file}/delete": {
+      "post": {
+        "summary": "Delete a voyage ZIP and any matching working directory",
+        "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Voyage deleted" }, "404": { "description": "Voyage not found" } }
+      }
+    },
+    "/settings": {
+      "post": { "summary": "Enable or disable automatic recording", "responses": { "200": { "description": "Setting saved" } } }
+    },
+    "/voyage/start": {
+      "post": { "summary": "Start an ordinary canonical voyage", "responses": { "200": { "description": "Voyage started" }, "400": { "description": "Start rejected" } } }
+    },
+    "/voyage/stop": {
+      "post": { "summary": "Stop and package an ordinary voyage", "responses": { "200": { "description": "Voyage ZIP completed" }, "400": { "description": "Stop rejected" } } }
+    },
+    "/voyage/comment": {
+      "post": { "summary": "Set the current or next voyage comment", "responses": { "200": { "description": "Comment saved" }, "400": { "description": "Comment rejected" } } }
+    },
+    "/voyage/observations": {
+      "get": { "summary": "Return recent observations for the active voyage", "responses": { "200": { "description": "Observation status" } } },
+      "post": { "summary": "Append a timestamped skipper observation", "responses": { "200": { "description": "Observation appended" }, "400": { "description": "Observation rejected" } } }
+    },
+    "/voyage/replay/start": {
+      "post": { "summary": "Start fixed-rate replay and recomputed child recording", "responses": { "200": { "description": "Replay started" }, "400": { "description": "Replay rejected" } } }
+    },
+    "/voyage/replay/stop": {
+      "post": { "summary": "Finalise a replay after verified canonical EOF", "responses": { "200": { "description": "Recomputed ZIP completed" }, "400": { "description": "Finalisation rejected" } } }
+    },
+    "/voyage/replay/abort": {
+      "post": { "summary": "Interrupt replay and preserve incomplete evidence", "responses": { "200": { "description": "Incomplete ZIP completed" }, "400": { "description": "Abort rejected" } } }
+    }
+  }
+}
