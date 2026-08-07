@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.16
+
+- Recover a completed current-format recomputation from Capture's durable
+  checkpoint by validating the canonical replay result and closed recomputed
+  output, instead of requiring retired Logger result-segment fields.
+- Await active-voyage preservation from the Signal K plugin `stop()` lifecycle
+  hook so shutdown does not race ZIP finalisation.
+- Remove the special recovery path for the pre-merge Capture 0.6.8 completion
+  shape and rename remaining recovery status text from Logger to Capture.
+
 ## 0.7.15
 
 - Document Capture as the sole current voyage recorder, replay engine,

@@ -399,6 +399,101 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
   }
 });
 
+test("startup resumes ZIP finalisation from a current Capture completion checkpoint", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-checkpoint-recovery-"));
+  const voyageDirectory = path.join(root, "voyages");
+  const voyageId = "voyage-20260807T190000Z";
+  const workingDirectory = path.join(voyageDirectory, voyageId);
+  const completedAt = "2026-08-07T19:05:00.000Z";
+  const output = '{"delta":{"updates":[]}}\n';
+  await fs.mkdir(path.join(workingDirectory, "recomputed"), { recursive: true });
+  await fs.mkdir(path.join(workingDirectory, "system"), { recursive: true });
+  await fs.writeFile(
+    path.join(workingDirectory, RECOMPUTED_OUTPUT_RELATIVE_PATH),
+    output,
+  );
+  const replayResult = {
+    contract: REPLAY_CONTRACT,
+    schemaVersion: 1,
+    timing: { valid: true, effectiveRate: 1 },
+    coverage: {
+      complete: true,
+      preparedComplete: true,
+      lastReason: "end of canonical input",
+    },
+    output: {
+      contract: "ajrm-marine-recomputed-output-v1",
+      fileName: RECOMPUTED_OUTPUT_RELATIVE_PATH,
+      complete: true,
+      records: 1,
+      bytes: Buffer.byteLength(output),
+    },
+  };
+  const recomputedReplay = {
+    schemaVersion: 2,
+    kind: "recomputed-replay",
+    timingRequired: true,
+    complete: true,
+    verified: true,
+    completedAt,
+    result: replayResult,
+  };
+  await fs.writeFile(
+    path.join(workingDirectory, "index.json"),
+    JSON.stringify({
+      id: voyageId,
+      version: "0.7.15",
+      startedAt: "2026-08-07T19:00:00.000Z",
+      stoppedAt: completedAt,
+      startReason: "recomputed replay",
+      stopReason: "verified replay EOF",
+      captureMode: "minimal",
+      recomputedReplay,
+      recomputedOutput: replayResult.output,
+      incomplete: false,
+      recomputationVerified: true,
+    }),
+  );
+  await fs.writeFile(
+    path.join(workingDirectory, "system", "recomputed-replay-completion.json"),
+    JSON.stringify({
+      contract: "ajrm-marine-recomputed-completion",
+      contractVersion: 1,
+      voyageId,
+      completedAt,
+      completionConfirmed: true,
+      verified: true,
+      recomputationVerified: true,
+      recomputedReplay,
+      replayResult,
+    }),
+  );
+
+  const app = fakeApp();
+  const plugin = createPlugin(app);
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    captureMode: "minimal",
+    deleteWorkingDirectoryAfterZip: false,
+  });
+
+  try {
+    const zipPath = path.join(voyageDirectory, `${voyageId}.zip`);
+    await waitFor(async () => fs.stat(zipPath).then(() => true, () => false));
+    const zip = new AdmZip(zipPath);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.incomplete, false);
+    assert.equal(index.recomputationVerified, true);
+    assert.equal(index.recomputedReplay.verified, true);
+    assert.equal(index.recomputedReplay.packagingRecoveredAfterRestart, true);
+    assert.equal(zip.readAsText(RECOMPUTED_OUTPUT_RELATIVE_PATH), output);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 function fakeApp({ echoHandledDeltas = false } = {}) {
   const signalk = new EventEmitter();
   return {
