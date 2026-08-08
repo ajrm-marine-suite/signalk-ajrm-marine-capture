@@ -232,7 +232,7 @@ async function prepareCaptureVoyageDownload(app, fileName) {
   try {
     return await api.prepareVoyageDownload(fileName);
   } catch (error) {
-    app.error?.(`[signalk-ajrm-marine-voyage-viewer] Capture portable voyage download failed: ${error.stack || error.message}`);
+    app.error?.(`[signalk-ajrm-marine-capture] Voyage download preparation failed: ${error.stack || error.message}`);
     return null;
   }
 }
@@ -2233,7 +2233,7 @@ function buildVoyageReview({
 
   if (bite.available) {
     paragraphs.push(
-      "This bundle includes AJRM Marine Console BITE output. BITE scenarios deliberately inject test targets, GPS faults, and alert-chain failures so Voyage Viewer can confirm the suite detects and reports them; treat BITE failures as test evidence unless the report says the software chain itself failed to react correctly.",
+      "This bundle includes AJRM Marine Console BITE output. BITE scenarios deliberately inject test targets, GPS faults, and alert-chain failures so Capture review can confirm the suite detects and reports them; treat BITE failures as test evidence unless the report says the software chain itself failed to react correctly.",
     );
     if (bite.failed > 0) {
       const failedNames = bite.failedTests
@@ -3017,7 +3017,7 @@ function generateGpx(analysis) {
     )
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="AJRM Marine Voyage Viewer ${escapeXml(packageInfo.version)}" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+<gpx version="1.1" creator="AJRM Marine Capture ${escapeXml(packageInfo.version)}" xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
   <metadata>
     <name>${escapeXml(name)}</name>
     ${description ? `<desc>${escapeXml(description)}</desc>` : ""}

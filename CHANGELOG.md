@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.3
+
+- Remove the retired Voyage Viewer in-process API aliases and publish review
+  status only below Capture's own Signal K status namespace.
+- Rename remaining review diagnostics, GPX metadata, and browser storage keys
+  to describe the current Capture-owned voyage review.
+
 ## 0.8.0
 
 - Remove the legacy-voyage converter and its installed command. Historical

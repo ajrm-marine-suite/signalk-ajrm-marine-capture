@@ -117,16 +117,16 @@ function initMap() {
     Satellite: satellite,
   };
   autoChartGroup = L.layerGroup();
-  setBaseMap(localStorage.getItem("ajrmMarineVoyageViewerBaseMap") || "NaturalEarth (offline)");
+  setBaseMap(localStorage.getItem("ajrmMarineCaptureReviewBaseMap") || "NaturalEarth (offline)");
   setOverlay(
     autoChartGroup,
-    localStorage.getItem("ajrmMarineVoyageViewerAutoCharts") === "true",
-    "ajrmMarineVoyageViewerAutoCharts",
+    localStorage.getItem("ajrmMarineCaptureReviewAutoCharts") === "true",
+    "ajrmMarineCaptureReviewAutoCharts",
   );
   setOverlay(
     seamarkLayer,
-    localStorage.getItem("ajrmMarineVoyageViewerOpenSeaMap") !== "false",
-    "ajrmMarineVoyageViewerOpenSeaMap",
+    localStorage.getItem("ajrmMarineCaptureReviewOpenSeaMap") !== "false",
+    "ajrmMarineCaptureReviewOpenSeaMap",
   );
   installCommonChartSelector();
   trackLayer = L.layerGroup().addTo(map);
@@ -142,10 +142,10 @@ function installCommonChartSelector() {
     L,
     map,
     baseMaps: baseLayers,
-    getBaseMap: () => localStorage.getItem("ajrmMarineVoyageViewerBaseMap") || "NaturalEarth (offline)",
+    getBaseMap: () => localStorage.getItem("ajrmMarineCaptureReviewBaseMap") || "NaturalEarth (offline)",
     setBaseMap,
     overlays: [
-      { name: MapCore.OPEN_SEA_MAP_NAME, isEnabled: () => map.hasLayer(seamarkLayer), setEnabled: (enabled) => setOverlay(seamarkLayer, enabled, "ajrmMarineVoyageViewerOpenSeaMap") },
+      { name: MapCore.OPEN_SEA_MAP_NAME, isEnabled: () => map.hasLayer(seamarkLayer), setEnabled: (enabled) => setOverlay(seamarkLayer, enabled, "ajrmMarineCaptureReviewOpenSeaMap") },
       { name: MapCore.AUTO_CHARTS_NAME, isEnabled: () => map.hasLayer(autoChartGroup), setEnabled: setAutoChartsEnabled },
     ],
     onFoldersChanged: async () => {
@@ -202,7 +202,7 @@ function setBaseMap(name) {
   if (currentBaseLayer) map.removeLayer(currentBaseLayer);
   currentBaseLayer = baseLayers[name];
   currentBaseLayer.addTo(map);
-  localStorage.setItem("ajrmMarineVoyageViewerBaseMap", name);
+  localStorage.setItem("ajrmMarineCaptureReviewBaseMap", name);
   for (const choice of elements.baseMapChoices) {
     choice.checked = choice.value === name;
   }
@@ -221,7 +221,7 @@ function setOverlay(layer, enabled, storageKey) {
 }
 
 async function setAutoChartsEnabled(enabled) {
-  setOverlay(autoChartGroup, enabled, "ajrmMarineVoyageViewerAutoCharts");
+  setOverlay(autoChartGroup, enabled, "ajrmMarineCaptureReviewAutoCharts");
   if (enabled && !chartResourcesLoaded) {
     elements.chartStatus.textContent = "Loading Signal K chart resources…";
     await loadChartResources({ force: true });
@@ -1401,7 +1401,7 @@ elements.autoCharts.addEventListener("change", () =>
   setAutoChartsEnabled(elements.autoCharts.checked).catch((error) => showToast(error.message, true)),
 );
 elements.openSeaMap.addEventListener("change", () =>
-  setOverlay(seamarkLayer, elements.openSeaMap.checked, "ajrmMarineVoyageViewerOpenSeaMap"),
+  setOverlay(seamarkLayer, elements.openSeaMap.checked, "ajrmMarineCaptureReviewOpenSeaMap"),
 );
 elements.downloadGpx.addEventListener("click", (event) => {
   exportSelectedGpx(event);

@@ -31,7 +31,6 @@ const ENGINE_STATIONARY_THRESHOLD_KNOTS =
   ENGINE_STATIONARY_THRESHOLD_MPS * MPS_TO_KNOTS;
 const AJRM_MARINE_SNAPSHOT_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineSnapshotApi");
 const AJRM_MARINE_CAPTURE_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineCaptureApi");
-const AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineVoyageViewerApi");
 const AJRM_MARINE_DISPLAY_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineDisplayApi");
 const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
@@ -265,10 +264,6 @@ module.exports = function ajrmMarineCapture(app) {
       delete globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY];
     }
     if (app.ajrmMarineCaptureApi?.pluginId === plugin.id) delete app.ajrmMarineCaptureApi;
-    if (app.ajrmMarineVoyageViewerApi?.pluginId === plugin.id) delete app.ajrmMarineVoyageViewerApi;
-    if (globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY]?.pluginId === plugin.id) {
-      delete globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY];
-    }
     voyageReview.stop();
   };
 
@@ -857,8 +852,6 @@ module.exports = function ajrmMarineCapture(app) {
     };
     app.ajrmMarineCaptureApi = api;
     globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY] = api;
-    app.ajrmMarineVoyageViewerApi = api;
-    globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY] = api;
   }
 
   async function prepareVoyageDownload(fileNameValue) {
@@ -2654,7 +2647,7 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.voyageState", value: voyageState },
       { path: "plugins.ajrmMarineCapture.playback", value: playback },
       {
-        path: "plugins.ajrmMarineVoyageViewer",
+        path: "plugins.ajrmMarineCapture.review",
         value: app.ajrmMarineVoyageReviewApi?.status?.() || null,
       },
       { path: "plugins.ajrmMarineCapture.movementSuppressedUntilFreshSpeed", value: movementSuppressedUntilFreshSpeed },
