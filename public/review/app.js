@@ -534,9 +534,11 @@ async function reviewSelectedFile() {
 
 async function analyseFile(fileName, { plot = true } = {}) {
   const requestId = ++analysisRequestId;
-  clearPlottedLayers();
-  plottedBounds = null;
-  elements.centrePlot.disabled = true;
+  if (plot) {
+    clearPlottedLayers();
+    plottedBounds = null;
+    elements.centrePlot.disabled = true;
+  }
   startPlotProgress(fileName);
   showToast(plot ? `Analysing ${fileName}…` : `Reviewing ${fileName}…`);
   elements.statusLine.textContent = plot ? `Analysing ${fileName}…` : `Reviewing ${fileName}…`;

@@ -1425,6 +1425,7 @@ test("web app exposes voyage notes and route review without retired Plotter cont
   assert.match(css, /\.review-highlight/);
   assert.match(app, /showSummary: false/);
   assert.match(app, /Track plotted\. Press Review/);
+  assert.match(app, /if \(plot\) \{\s*clearPlottedLayers\(\);\s*plottedBounds = null;\s*elements\.centrePlot\.disabled = true;\s*\}/);
   assert.match(app, /\["DR evidence", drEvidenceSummary/);
   assert.match(app, /\["Integrity comparison", integrityAssuranceSummary/);
   assert.match(app, /\["Pilot helm bias", formatRudderSummary/);
