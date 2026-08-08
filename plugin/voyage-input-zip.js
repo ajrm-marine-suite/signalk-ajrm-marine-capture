@@ -4,7 +4,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const yauzl = require("yauzl");
 
-const { INPUT_RELATIVE_PATH } = require("./canonical-voyage");
+const {
+  INPUT_RELATIVE_PATH,
+  LEGACY_INPUT_RELATIVE_PATH,
+} = require("./canonical-voyage");
+
+const INPUT_ENTRY_CANDIDATES = new Set([
+  INPUT_RELATIVE_PATH,
+  LEGACY_INPUT_RELATIVE_PATH,
+]);
 
 function extractCanonicalInputFromZip(zipPath, targetPath) {
   return new Promise((resolve, reject) => {
@@ -30,7 +38,7 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
         );
       });
       zip.on("entry", (entry) => {
-        if (entry.fileName !== INPUT_RELATIVE_PATH || /\/$/.test(entry.fileName)) {
+        if (!INPUT_ENTRY_CANDIDATES.has(entry.fileName) || /\/$/.test(entry.fileName)) {
           zip.readEntry();
           return;
         }
@@ -68,7 +76,7 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
                     finish(null, {
                       path: targetPath,
                       bytes: info.size,
-                      entry: INPUT_RELATIVE_PATH,
+                      entry: entry.fileName,
                     });
                   })
                   .catch((error) =>

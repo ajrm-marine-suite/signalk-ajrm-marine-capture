@@ -14,6 +14,8 @@ const createVoyageReview = require("./voyage-review");
 const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
+  LEGACY_INPUT_RELATIVE_PATH,
+  PHYSICAL_SOURCE_TYPES,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
   REPLAY_CONTRACT,
   canonicalInputRecord,
@@ -107,6 +109,7 @@ module.exports = function ajrmMarineCapture(app) {
   let startupRecoveryPromise = Promise.resolve();
   let startVoyagePromise = null;
   let finalisation = null;
+  const knownPhysicalInputSources = new Set();
   let lastZipProgressPublishMs = 0;
   let lastReplayStatusPublishMs = 0;
   const recentEvents = [];
@@ -114,7 +117,7 @@ module.exports = function ajrmMarineCapture(app) {
   plugin.id = "signalk-ajrm-marine-capture";
   plugin.name = "AJRM Marine Capture";
   plugin.description =
-    "Canonical YDEN voyage recorder, fixed-rate replay engine, indexer, and bundle dashboard.";
+    "Canonical physical-sensor voyage recorder, fixed-rate replay engine, indexer, and bundle dashboard.";
 
   plugin.schema = {
     type: "object",
@@ -138,10 +141,10 @@ module.exports = function ajrmMarineCapture(app) {
       },
       inputSourcePrefixes: {
         type: "array",
-        title: "Canonical physical input source prefixes",
+        title: "Additional physical input source prefixes",
         description:
-          "Only explicitly sourced updates matching these exact prefixes are replayable input. Derived plugin updates are never written to input/yden-input.jsonl.",
-        default: ["YDEN"],
+          "Optional source prefixes for physical inputs that do not report standard NMEA 2000, NMEA 0183, or GPSD provenance. Normally leave empty; derived plugin updates are excluded.",
+        default: [],
         items: {
           type: "string",
         },
@@ -212,6 +215,7 @@ module.exports = function ajrmMarineCapture(app) {
 
   plugin.start = (pluginOptions = {}) => {
     options = normalizeOptions(pluginOptions);
+    knownPhysicalInputSources.clear();
     shutdownPending = false;
     lastPowerIntentKey = null;
     notificationSessionId = randomUUID();
@@ -630,6 +634,7 @@ module.exports = function ajrmMarineCapture(app) {
     const inputDelta = extractCanonicalInputDelta(
       delta,
       options.inputSourcePrefixes,
+      knownPhysicalInputSources,
     );
     if (!inputDelta) return;
     const elapsedMs = Math.max(
@@ -1001,6 +1006,7 @@ module.exports = function ajrmMarineCapture(app) {
             contract: INPUT_CONTRACT,
             schemaVersion: 1,
             fileName: INPUT_RELATIVE_PATH,
+            sourceTypes: [...PHYSICAL_SOURCE_TYPES],
             sourcePrefixes: options.inputSourcePrefixes,
             records: 0,
             bytes: 0,
@@ -1821,10 +1827,11 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function recoverCanonicalInputState(directory, existingState) {
-    const filePath = path.join(directory, INPUT_RELATIVE_PATH);
+    const relativePath = await findCanonicalInputRelativePath(directory, existingState);
+    const filePath = path.join(directory, relativePath);
     let fileInfo = await fs.promises.stat(filePath).catch(() => null);
     if (!fileInfo?.isFile()) {
-      throw new Error(`Interrupted voyage has no ${INPUT_RELATIVE_PATH}`);
+      throw new Error(`Interrupted voyage has no canonical physical sensor input file`);
     }
     let fileEndsWithLineBreak = false;
     if (fileInfo.size > 0) {
@@ -1900,7 +1907,10 @@ module.exports = function ajrmMarineCapture(app) {
     return {
       contract: INPUT_CONTRACT,
       schemaVersion: 1,
-      fileName: INPUT_RELATIVE_PATH,
+      fileName: relativePath,
+      sourceTypes: Array.isArray(existingState?.sourceTypes)
+        ? existingState.sourceTypes
+        : [...PHYSICAL_SOURCE_TYPES],
       sourcePrefixes: Array.isArray(existingState?.sourcePrefixes)
         ? existingState.sourcePrefixes
         : options.inputSourcePrefixes,
@@ -1915,6 +1925,24 @@ module.exports = function ajrmMarineCapture(app) {
       recoveredAfterRestart: true,
       truncatedTrailingBytes,
     };
+  }
+
+  async function findCanonicalInputRelativePath(directory, existingState) {
+    const candidates = [
+      existingState?.fileName === INPUT_RELATIVE_PATH ||
+      existingState?.fileName === LEGACY_INPUT_RELATIVE_PATH
+        ? existingState.fileName
+        : null,
+      INPUT_RELATIVE_PATH,
+      LEGACY_INPUT_RELATIVE_PATH,
+    ].filter((entry, index, values) =>
+      typeof entry === "string" && entry && values.indexOf(entry) === index,
+    );
+    for (const relativePath of candidates) {
+      const info = await fs.promises.stat(path.join(directory, relativePath)).catch(() => null);
+      if (info?.isFile()) return relativePath;
+    }
+    return INPUT_RELATIVE_PATH;
   }
 
   async function recoverDrTrackState(
@@ -2593,6 +2621,8 @@ module.exports = function ajrmMarineCapture(app) {
       canonicalInputContract: INPUT_CONTRACT,
       replayContract: REPLAY_CONTRACT,
       inputSourcePrefixes: options.inputSourcePrefixes,
+      automaticPhysicalInputSourceTypes: [...PHYSICAL_SOURCE_TYPES],
+      learnedPhysicalInputSources: [...knownPhysicalInputSources].sort(),
       review: app.ajrmMarineVoyageReviewApi?.status?.() || null,
       currentVoyage: currentVoyage ? summarizeVoyage(currentVoyage) : null,
       observationLog: currentVoyage

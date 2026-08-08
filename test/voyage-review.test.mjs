@@ -1581,7 +1581,7 @@ async function writeCanonicalVoyage(dir, fileName, records) {
   const bundleDir = path.join(dir, `${fileName}.bundle`);
   await fs.mkdir(path.join(bundleDir, "input"), { recursive: true });
   await fs.writeFile(
-    path.join(bundleDir, "input", "yden-input.jsonl"),
+    path.join(bundleDir, "input", "sensor-input.jsonl"),
     records.map((record) => JSON.stringify(record)).join("\n"),
   );
   await fs.writeFile(path.join(bundleDir, "index.json"), JSON.stringify({
@@ -1591,12 +1591,12 @@ async function writeCanonicalVoyage(dir, fileName, records) {
     canonicalInput: {
       contract: "ajrm-marine-canonical-input-v1",
       schemaVersion: 1,
-      fileName: "input/yden-input.jsonl",
+      fileName: "input/sensor-input.jsonl",
       complete: true,
     },
   }));
   const zipPath = path.join(dir, fileName);
-  await writeZip(zipPath, bundleDir, ["index.json", "input/yden-input.jsonl"]);
+  await writeZip(zipPath, bundleDir, ["index.json", "input/sensor-input.jsonl"]);
   return zipPath;
 }
 

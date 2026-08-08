@@ -6,8 +6,10 @@ const { performance } = require("node:perf_hooks");
 
 const INPUT_CONTRACT = "ajrm-marine-canonical-input-v1";
 const REPLAY_CONTRACT = "ajrm-marine-monotonic-replay-v1";
-const INPUT_RELATIVE_PATH = "input/yden-input.jsonl";
+const INPUT_RELATIVE_PATH = "input/sensor-input.jsonl";
+const LEGACY_INPUT_RELATIVE_PATH = "input/yden-input.jsonl";
 const RECOMPUTED_OUTPUT_RELATIVE_PATH = "recomputed/output.jsonl";
+const PHYSICAL_SOURCE_TYPES = new Set(["NMEA2000", "NMEA0183", "GPSD"]);
 
 function sourceLabel(delta, update) {
   return String(
@@ -20,11 +22,11 @@ function sourceLabel(delta, update) {
 }
 
 function normalizeSourcePrefixes(value) {
-  const prefixes = Array.isArray(value) ? value : ["YDEN"];
+  const prefixes = Array.isArray(value) ? value : [];
   const clean = prefixes
     .map((entry) => String(entry || "").trim())
     .filter(Boolean);
-  return [...new Set(clean.length ? clean : ["YDEN"])];
+  return [...new Set(clean)];
 }
 
 function sourceMatchesPrefix(source, prefixes) {
@@ -33,13 +35,37 @@ function sourceMatchesPrefix(source, prefixes) {
   );
 }
 
-function extractCanonicalInputDelta(delta, sourcePrefixes = ["YDEN"]) {
+function sourceDetails(delta, update) {
+  const source = update?.source && typeof update.source === "object"
+    ? update.source
+    : delta?.source && typeof delta.source === "object"
+      ? delta.source
+      : null;
+  return {
+    label: sourceLabel(delta, update),
+    type: String(source?.type || "").trim().toUpperCase(),
+  };
+}
+
+function extractCanonicalInputDelta(
+  delta,
+  sourcePrefixes = [],
+  knownPhysicalSources = new Set(),
+) {
   if (!delta || typeof delta !== "object") return null;
   const prefixes = normalizeSourcePrefixes(sourcePrefixes);
   const updates = [];
   for (const update of Array.isArray(delta.updates) ? delta.updates : []) {
-    const source = sourceLabel(delta, update);
-    if (!source || !sourceMatchesPrefix(source, prefixes)) continue;
+    const source = sourceDetails(delta, update);
+    if (!source.label) continue;
+    const structuredPhysicalSource = PHYSICAL_SOURCE_TYPES.has(source.type);
+    if (structuredPhysicalSource) knownPhysicalSources.add(source.label);
+    const explicitlyAllowed = sourceMatchesPrefix(source.label, prefixes);
+    if (
+      !structuredPhysicalSource &&
+      !knownPhysicalSources.has(source.label) &&
+      !explicitlyAllowed
+    ) continue;
     const values = Array.isArray(update.values)
       ? update.values.filter(
           (entry) =>
@@ -52,7 +78,7 @@ function extractCanonicalInputDelta(delta, sourcePrefixes = ["YDEN"]) {
     if (!values.length) continue;
     updates.push({
       ...structuredClone(update),
-      $source: source,
+      $source: source.label,
       values: structuredClone(values),
     });
   }
@@ -113,7 +139,7 @@ async function inspectCanonicalInput(filePath) {
     previousElapsedMs = elapsedMs;
     records += 1;
   });
-  if (!records) throw new Error("Voyage contains no canonical YDEN input records");
+  if (!records) throw new Error("Voyage contains no canonical physical sensor input records");
   return {
     contract: INPUT_CONTRACT,
     records,
@@ -351,6 +377,8 @@ function round4(value) {
 module.exports = {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
+  LEGACY_INPUT_RELATIVE_PATH,
+  PHYSICAL_SOURCE_TYPES,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
   REPLAY_CONTRACT,
   canonicalInputRecord,
@@ -360,4 +388,5 @@ module.exports = {
   normalizeSourcePrefixes,
   refreshReplayDelta,
   sourceLabel,
+  sourceDetails,
 };

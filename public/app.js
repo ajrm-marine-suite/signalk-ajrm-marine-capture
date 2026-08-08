@@ -164,7 +164,7 @@ function render(status) {
   elements.captureValue.textContent = status.currentVoyage?.recomputedReplay
     ? "recording recomputed output"
     : status.currentVoyage
-      ? "recording canonical YDEN input"
+      ? "recording canonical physical sensor input"
       : "idle";
   elements.snapshotValue.textContent = status.currentVoyage
     ? `${status.currentVoyage.snapshotCount || 0}`

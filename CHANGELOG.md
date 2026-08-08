@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.4
+
+- Detect physical NMEA 2000, NMEA 0183, and GPSD inputs from structured Signal
+  K provenance instead of assuming a Yacht Devices/YDEN source prefix.
+- Learn physical source IDs so later metadata-sparse updates from the same
+  source remain replayable, while derived plugin updates stay isolated.
+- Write new voyages to vendor-neutral `input/sensor-input.jsonl`; retain
+  read/recovery support for existing `input/yden-input.jsonl` bundles.
+- Treat configured input source prefixes as optional additions for unusual
+  physical providers rather than as the normal or exclusive selection rule.
+
 ## 0.9.3
 
 - Remove the retired Voyage Viewer in-process API aliases and publish review

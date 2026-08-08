@@ -62,7 +62,7 @@ test("recomputed verification requires canonical EOF and valid timing", () => {
   );
 });
 
-test("Capture records canonical YDEN input and excludes derived updates", async () => {
+test("Capture records canonical physical input and excludes derived updates", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-canonical-record-"));
   const voyageDirectory = path.join(root, "voyages");
   const app = fakeApp();
@@ -83,7 +83,13 @@ test("Capture records canonical YDEN input and excludes derived updates", async 
       context: "vessels.self",
       updates: [
         {
-          $source: "YDEN.2",
+          $source: "n2k-gateway.2",
+          source: {
+            label: "n2k-gateway",
+            type: "NMEA2000",
+            pgn: 129025,
+            src: "2",
+          },
           timestamp: "2026-07-31T08:00:00.000Z",
           values: [
             { path: "navigation.position", value: { latitude: 55.8, longitude: -5.7 } },
@@ -105,12 +111,13 @@ test("Capture records canonical YDEN input and excludes derived updates", async 
     assert.equal(record.contract, INPUT_CONTRACT);
     assert.deepEqual(
       record.delta.updates.map((update) => update.$source),
-      ["YDEN.2"],
+      ["n2k-gateway.2"],
     );
     const index = JSON.parse(zip.readAsText("index.json"));
     assert.equal(index.canonicalInput.contract, INPUT_CONTRACT);
     assert.equal(index.canonicalInput.complete, true);
     assert.equal(index.canonicalInput.records, 1);
+    assert.deepEqual(index.canonicalInput.sourceTypes, ["NMEA2000", "NMEA0183", "GPSD"]);
   } finally {
     plugin.stop();
     await fs.rm(root, { recursive: true, force: true });

@@ -3,7 +3,7 @@
 > **Alpha software:** this software has not been validated for navigation or
 > safety and must not be relied upon for either purpose.
 
-AJRM Marine Capture v0.9.2 is the single AJRM Marine voyage recorder, replay
+AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
@@ -12,18 +12,23 @@ Logger and includes the former Voyage Viewer.
 Each newly recorded ordinary voyage has one replayable file:
 
 ```text
-input/yden-input.jsonl
+input/sensor-input.jsonl
 ```
 
-Capture writes only updates with an explicit source matching a configured
-physical-input prefix (default `YDEN`). Each JSONL record contains:
+Capture writes only explicitly sourced physical inputs. Standard NMEA 2000,
+NMEA 0183, and GPSD provenance is recognized automatically, regardless of the
+gateway manufacturer or Signal K source label. Optional source prefixes are
+available only for physical inputs that do not publish standard provenance.
+Each JSONL record contains:
 
 - contract `ajrm-marine-canonical-input-v1`;
 - a non-decreasing `elapsedMs` measured from one monotonic clock;
 - the explicit source identity; and
 - the original input delta.
 
-Derived plugin paths, notifications, Capture status, and metadata-free values
+Once a structured physical source has been seen, later updates carrying the
+same source ID remain eligible even if their retained metadata is sparse.
+Derived plugin paths, notifications, Capture status, and unattributed values
 are not canonical input.
 
 A recomputed child voyage writes the active Signal K result stream to:
@@ -39,7 +44,7 @@ That file is evidence only. It is never accepted as replay input.
 Select a canonical voyage ZIP in Capture and press **Start replay result**.
 Capture:
 
-1. scans `input/yden-input.jsonl` once and rejects malformed or backwards
+1. scans `input/sensor-input.jsonl` once and rejects malformed or backwards
    elapsed time;
 2. replays it server-side at fixed `1x` from one monotonic scheduling anchor;
 3. refreshes Signal K update timestamps and `navigation.datetime`;
@@ -105,7 +110,7 @@ Course API or control an autopilot.
 
 ## Storage and API
 
-The default voyage directory is:
+The default voyage directory is relative to the Signal K user's home directory:
 
 ```text
 ~/AJRMMarineLogs/voyages

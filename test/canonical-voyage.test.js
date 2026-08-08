@@ -15,12 +15,13 @@ const {
   refreshReplayDelta,
 } = require("../plugin/canonical-voyage");
 
-test("canonical input keeps only explicitly sourced YDEN updates", () => {
+test("canonical input accepts a physical NMEA source and excludes derived updates", () => {
   const input = extractCanonicalInputDelta({
     context: "vessels.self",
     updates: [
       {
-        $source: "YDEN.2",
+        $source: "n2k-gateway.2",
+        source: { label: "n2k-gateway", type: "NMEA2000", pgn: 129025, src: "2" },
         timestamp: "2026-07-17T12:00:00.000Z",
         values: [{ path: "navigation.position", value: { latitude: 55, longitude: -5 } }],
       },
@@ -35,8 +36,44 @@ test("canonical input keeps only explicitly sourced YDEN updates", () => {
       },
     ],
   });
-  assert.deepEqual(input.updates.map((update) => update.$source), ["YDEN.2"]);
+  assert.deepEqual(input.updates.map((update) => update.$source), ["n2k-gateway.2"]);
   assert.equal(input.updates[0].values[0].path, "navigation.position");
+});
+
+test("canonical input remembers a physical source when later metadata is sparse", () => {
+  const knownPhysicalSources = new Set();
+  const first = extractCanonicalInputDelta({
+    updates: [{
+      $source: "can-interface.17",
+      source: { label: "can-interface", type: "NMEA2000", pgn: 129026, src: "17" },
+      values: [{ path: "navigation.speedOverGround", value: 2 }],
+    }],
+  }, [], knownPhysicalSources);
+  const retained = extractCanonicalInputDelta({
+    updates: [{
+      $source: "can-interface.17",
+      values: [{ path: "navigation.courseOverGroundTrue", value: 1 }],
+    }],
+  }, [], knownPhysicalSources);
+  assert.equal(first.updates.length, 1);
+  assert.equal(retained.updates.length, 1);
+  assert.equal(knownPhysicalSources.has("can-interface.17"), true);
+});
+
+test("optional prefixes add non-standard physical sources without admitting plugins", () => {
+  const input = extractCanonicalInputDelta({
+    updates: [
+      {
+        $source: "serial-gateway.port-a",
+        values: [{ path: "navigation.position", value: { latitude: 55, longitude: -5 } }],
+      },
+      {
+        $source: "courseApi",
+        values: [{ path: "navigation.course.nextPoint", value: { name: "DP" } }],
+      },
+    ],
+  }, ["serial-gateway"]);
+  assert.deepEqual(input.updates.map((update) => update.$source), ["serial-gateway.port-a"]);
 });
 
 test("replay refreshes update and navigation datetime timestamps", () => {
