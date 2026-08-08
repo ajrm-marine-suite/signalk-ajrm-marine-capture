@@ -1,10 +1,10 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.8.0",
-  "description": "Canonical voyage recorder, fixed-rate replay, and diagnostic bundle builder for AJRM Marine Suite testing.",
+  "version": "0.9.0",
+  "description": "Canonical voyage recorder, fixed-rate replay, review, and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
-    "test": "node --test test/*.test.js && node --check plugin/index.js && node --check public/app.js && node -e \"JSON.parse(require('node:fs').readFileSync('plugin/openApi.json', 'utf8'))\""
+    "test": "node --test test/*.test.js test/*.test.mjs && node --check plugin/index.js && node --check plugin/voyage-review.js && node --check public/app.js && node --check public/review/app.js && node -e \"JSON.parse(require('node:fs').readFileSync('plugin/openApi.json', 'utf8'))\""
   },
   "keywords": [
     "signalk-node-server-plugin",
@@ -30,7 +30,7 @@
   },
   "homepage": "https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture#readme",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "files": [
     "plugin",
@@ -40,16 +40,18 @@
   ],
   "signalk-plugin-enabled-by-default": true,
   "signalk": {
-    "displayName": "AJRM Marine Capture",
+    "displayName": "AJRM Marine Voyages",
     "appIcon": "./public/icon.svg",
     "recommends": [
-      "signalk-ajrm-marine-snapshot",
-      "signalk-ajrm-marine-voyage-viewer"
+      "signalk-ajrm-marine-snapshot"
     ]
   },
   "dependencies": {
     "adm-zip": "^0.6.0",
     "archiver": "^8.0.0",
     "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@ajrm-marine/map-core": "github:ajrm-marine-suite/ajrm-marine-map-core#v0.7.0"
   }
 }

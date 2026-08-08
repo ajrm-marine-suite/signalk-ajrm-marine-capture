@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "AJRM Marine Capture",
-    "version": "0.8.0",
-    "description": "Canonical voyage recording, replay, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
+    "title": "AJRM Marine Voyages",
+    "version": "0.9.0",
+    "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {
     "/status": {
@@ -25,6 +25,27 @@
         "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }],
         "responses": { "200": { "description": "Voyage deleted" }, "404": { "description": "Voyage not found" } }
       }
+    },
+    "/review/status": {
+      "get": { "summary": "Return voyage-review capability status", "responses": { "200": { "description": "Review status" } } }
+    },
+    "/review/voyages": {
+      "get": { "summary": "List voyage bundles for review", "responses": { "200": { "description": "Voyage list" } } }
+    },
+    "/review/voyages/{file}/analysis-progress": {
+      "get": { "summary": "Return voyage-analysis progress", "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Analysis progress" } } }
+    },
+    "/review/voyages/{file}/analyse": {
+      "post": { "summary": "Analyse a voyage bundle", "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Voyage analysis" } } }
+    },
+    "/review/voyages/{file}/track.gpx": {
+      "get": { "summary": "Export a reviewed voyage track as GPX", "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "GPX track" } } }
+    },
+    "/review/voyages/{file}/download": {
+      "get": { "summary": "Download a voyage from the review application", "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Voyage ZIP" } } }
+    },
+    "/review/charts": {
+      "get": { "summary": "List Signal K chart resources used by voyage review", "responses": { "200": { "description": "Chart resources" } } }
     },
     "/settings": {
       "post": { "summary": "Enable or disable automatic recording", "responses": { "200": { "description": "Setting saved" } } }

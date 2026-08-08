@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AJRM Marine Voyage Review</title>
+    <link rel="stylesheet" href="./leaflet.css">
+    <link rel="stylesheet" href="./ajrm-map-core.css?v=0.7.0">
+    <link rel="stylesheet" href="./styles.css?v=0.6.22">
+  </head>
+  <body>
+    <div id="map" class="map" aria-label="Voyage chart"></div>
+
+    <header class="topbar" hidden>
+      <div class="brand">
+        <img src="./icon.svg" alt="" class="app-icon">
+        <div>
+          <h1>AJRM Marine Voyage Review</h1>
+          <p>Plot AJRM Marine Capture voyages over chart layers.</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="toggleVoyages" type="button" aria-pressed="false">Voyages</button>
+        <button id="toggleCharts" type="button" hidden>Charts</button>
+        <button id="refreshVoyages" type="button">Refresh</button>
+        <button id="toggleSummary" type="button" aria-pressed="true">Summary</button>
+      </div>
+    </header>
+
+    <div id="plotProgress" class="progress-panel hidden" aria-live="polite">
+      <div class="progress-label">
+        <span id="progressText">Preparing…</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+    </div>
+
+    <div class="map-status-stack">
+      <div id="chartCycleStatus" class="ajrm-map-chart-cycle-status" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <aside id="voyageDrawer" class="drawer drawer-left" aria-label="Voyages">
+      <div class="drawer-header">
+        <div>
+          <h2>Voyages</h2>
+          <p id="statusLine">Loading…</p>
+        </div>
+      </div>
+      <div class="selected-actions" aria-label="Selected voyage actions">
+        <button id="plotSelected" type="button" disabled>Plot</button>
+        <button id="reviewSelected" type="button" disabled>Review</button>
+        <button id="centrePlot" type="button" disabled>Centre plot</button>
+        <button id="toggleDrTrack" type="button" disabled aria-pressed="false">DR Track</button>
+        <a id="downloadGpx" class="download-link disabled" href="#" download aria-disabled="true">Export GPX</a>
+        <a id="downloadSelected" class="download-link disabled" href="#" download aria-disabled="true">Download</a>
+      </div>
+      <p id="selectedDetails" class="selected-details">Select a voyage.</p>
+      <div id="voyageList" class="voyage-list" role="listbox" aria-label="Voyages"></div>
+    </aside>
+
+    <aside id="chartDrawer" class="drawer drawer-right" aria-label="Charts" hidden>
+      <div class="drawer-header">
+        <div>
+          <h2>Charts</h2>
+          <p id="chartStatus">Chart layers and overlays</p>
+        </div>
+      </div>
+      <div class="drawer-section">
+        <h3>Basemap</h3>
+        <label class="choice-row">
+          <input type="radio" name="baseMap" value="Empty">
+          <span>Empty</span>
+        </label>
+        <label class="choice-row">
+          <input type="radio" name="baseMap" value="NaturalEarth (offline)">
+          <span>NaturalEarth (offline)</span>
+        </label>
+        <label class="choice-row">
+          <input type="radio" name="baseMap" value="OpenStreetMap">
+          <span>OpenStreetMap</span>
+        </label>
+        <label class="choice-row">
+          <input type="radio" name="baseMap" value="OpenTopoMap">
+          <span>OpenTopoMap</span>
+        </label>
+        <label class="choice-row">
+          <input type="radio" name="baseMap" value="Satellite">
+          <span>Satellite</span>
+        </label>
+      </div>
+      <div class="drawer-section">
+        <h3>Overlays</h3>
+        <label class="choice-row">
+          <input id="checkAutoCharts" type="checkbox">
+          <span>Auto Charts</span>
+        </label>
+        <label class="choice-row">
+          <input id="checkOpenSeaMap" type="checkbox">
+          <span>OpenSeaMap</span>
+        </label>
+      </div>
+    </aside>
+
+    <section id="summaryPanel" class="summary-panel open" aria-label="Voyage summary">
+      <div class="summary-header">
+        <div>
+          <h2 id="summaryTitle">Voyage summary</h2>
+          <p id="summarySubtitle"></p>
+        </div>
+      </div>
+      <div id="summaryGrid" class="summary-grid"></div>
+      <section id="notesPanel" class="voyage-notes" hidden>
+        <h3>Voyage notes</h3>
+        <div id="notesList" class="voyage-notes-list"></div>
+      </section>
+      <div id="reviewPanel" class="review-panel" hidden></div>
+      <p id="comment" class="comment"></p>
+    </section>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script src="./leaflet.js"></script>
+    <script src="./protomaps-leaflet.js"></script>
+    <script type="module" src="./app.js?v=0.6.22"></script>
+  </body>
+</html>

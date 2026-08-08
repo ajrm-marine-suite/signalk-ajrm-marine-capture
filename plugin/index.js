@@ -10,6 +10,7 @@ const { ZipArchive } = require("archiver");
 const yauzl = require("yauzl");
 const packageInfo = require("../package.json");
 const openApi = require("./openApi.json");
+const createVoyageReview = require("./voyage-review");
 const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
@@ -30,6 +31,7 @@ const ENGINE_STATIONARY_THRESHOLD_KNOTS =
   ENGINE_STATIONARY_THRESHOLD_MPS * MPS_TO_KNOTS;
 const AJRM_MARINE_SNAPSHOT_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineSnapshotApi");
 const AJRM_MARINE_CAPTURE_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineCaptureApi");
+const AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineVoyageViewerApi");
 const AJRM_MARINE_DISPLAY_API_REGISTRY = Symbol.for("mcdonaldajr.ajrmMarineDisplayApi");
 const CAPTURE_MODES = new Set(["minimal", "voyage", "debug"]);
 const POWER_INTENT_PATH = "plugins.ajrmMarinePiController.power.intent";
@@ -70,6 +72,10 @@ const PLUGIN_CONFIG_FILE = path.join(
 
 module.exports = function ajrmMarineCapture(app) {
   const plugin = {};
+  const voyageReview = createVoyageReview(app, {
+    embedded: true,
+    pluginId: "signalk-ajrm-marine-capture-review",
+  });
   let options = normalizeOptions({});
   let deltaListener = null;
   let monitorTimer = null;
@@ -123,6 +129,13 @@ module.exports = function ajrmMarineCapture(app) {
         type: "string",
         title: "Voyage bundle directory",
         default: DEFAULT_VOYAGE_DIRECTORY,
+      },
+      maxTrackPoints: {
+        type: "integer",
+        title: "Maximum voyage-review track points",
+        default: 6000,
+        minimum: 500,
+        maximum: 50000,
       },
       inputSourcePrefixes: {
         type: "array",
@@ -205,6 +218,11 @@ module.exports = function ajrmMarineCapture(app) {
     notificationSessionId = randomUUID();
     notificationSequence = 0;
     ensureDirectories();
+    voyageReview.start({
+      voyageDirectory: options.voyageDirectory,
+      maxTrackPoints: options.maxTrackPoints,
+      publicBase: "/plugins/signalk-ajrm-marine-capture/review",
+    });
     exposeCaptureApi();
     startupRecoveryPromise = closeIncompleteVoyagesOnStartup().catch((error) => {
       logError("startup recovery failed", error);
@@ -247,9 +265,15 @@ module.exports = function ajrmMarineCapture(app) {
       delete globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY];
     }
     if (app.ajrmMarineCaptureApi?.pluginId === plugin.id) delete app.ajrmMarineCaptureApi;
+    if (app.ajrmMarineVoyageViewerApi?.pluginId === plugin.id) delete app.ajrmMarineVoyageViewerApi;
+    if (globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY]?.pluginId === plugin.id) {
+      delete globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY];
+    }
+    voyageReview.stop();
   };
 
   plugin.registerWithRouter = function registerWithRouter(router) {
+    voyageReview.registerWithRouter(prefixedRouter(router, "/review"));
     router.get("/status", async (_req, res) => {
       try {
         res.json(await buildStatus());
@@ -463,6 +487,7 @@ module.exports = function ajrmMarineCapture(app) {
     return {
       enabled: source.enabled === true,
       voyageDirectory: expandHome(source.voyageDirectory || defaultVoyageDirectory()),
+      maxTrackPoints: clampInt(source.maxTrackPoints, 6000, 500, 50000),
       inputSourcePrefixes: normalizeSourcePrefixes(source.inputSourcePrefixes),
       replayMaximumLagSeconds: clampNumber(
         source.replayMaximumLagSeconds,
@@ -826,9 +851,14 @@ module.exports = function ajrmMarineCapture(app) {
       async prepareVoyageDownload(fileName) {
         return prepareVoyageDownload(fileName);
       },
+      async analyseVoyage(fileName) {
+        return app.ajrmMarineVoyageReviewApi.analyseVoyage(fileName);
+      },
     };
     app.ajrmMarineCaptureApi = api;
     globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY] = api;
+    app.ajrmMarineVoyageViewerApi = api;
+    globalThis[AJRM_MARINE_VOYAGE_VIEWER_API_REGISTRY] = api;
   }
 
   async function prepareVoyageDownload(fileNameValue) {
@@ -2570,6 +2600,7 @@ module.exports = function ajrmMarineCapture(app) {
       canonicalInputContract: INPUT_CONTRACT,
       replayContract: REPLAY_CONTRACT,
       inputSourcePrefixes: options.inputSourcePrefixes,
+      review: app.ajrmMarineVoyageReviewApi?.status?.() || null,
       currentVoyage: currentVoyage ? summarizeVoyage(currentVoyage) : null,
       observationLog: currentVoyage
         ? publicObservationLog(currentVoyage.observations)
@@ -2622,6 +2653,10 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.stwKnots", value: stwKnots },
       { path: "plugins.ajrmMarineCapture.voyageState", value: voyageState },
       { path: "plugins.ajrmMarineCapture.playback", value: playback },
+      {
+        path: "plugins.ajrmMarineVoyageViewer",
+        value: app.ajrmMarineVoyageReviewApi?.status?.() || null,
+      },
       { path: "plugins.ajrmMarineCapture.movementSuppressedUntilFreshSpeed", value: movementSuppressedUntilFreshSpeed },
       { path: "plugins.ajrmMarineCapture.autoStartInhibited", value: autoStartInhibited },
       { path: "plugins.ajrmMarineCapture.thresholds.movementSpeedKnots", value: options.movementSpeedKnots },
@@ -3993,6 +4028,15 @@ function safePathPart(value) {
 
 function safeBaseName(value) {
   return path.basename(String(value || ""));
+}
+
+function prefixedRouter(router, prefix) {
+  const mount = (method) => (route, ...handlers) =>
+    router[method](`${prefix}${route}`, ...handlers);
+  return {
+    get: mount("get"),
+    post: mount("post"),
+  };
 }
 
 function recomputedReplayVerification(recomputedReplay, replayResult) {
