@@ -1,3 +1,7 @@
+/**
+ * Browser entry point for AJRM Marine Voyages; binds operator controls and renders server state.
+ */
+
 const API = "/plugins/signalk-ajrm-marine-capture";
 
 const elements = {

@@ -1,3 +1,7 @@
+/**
+ * Implements the voyage input ZIP responsibilities of the AJRM Marine Voyages Signal K server.
+ */
+
 "use strict";
 
 const fs = require("node:fs");

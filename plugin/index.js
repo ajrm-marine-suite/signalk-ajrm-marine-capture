@@ -1,3 +1,7 @@
+/**
+ * Signal K server entry point for AJRM Marine Voyages; registers lifecycle, subscriptions, routes, and status.
+ */
+
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
