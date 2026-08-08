@@ -15,6 +15,28 @@ body {
   overflow: hidden;
 }
 
+.capture-return {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 1300;
+  border: 1px solid #8b949e;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+  color: #24292f;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.capture-return:hover,
+.capture-return:focus-visible {
+  background: #f0f6fc;
+  outline: 3px solid #facc15;
+  outline-offset: 2px;
+}
+
 button,
 .download-link {
   font: inherit;
