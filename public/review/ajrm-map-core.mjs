@@ -5,12 +5,111 @@
  */
 
 export const MAP_CORE_CONTRACT = "ajrm-marine-map-shell-v1";
-export const MAP_CORE_VERSION = "0.7.1";
+export const MAP_CORE_VERSION = "0.7.3";
 export const AUTO_CHARTS_NAME = "Auto Charts";
 export const OPEN_SEA_MAP_NAME = "OpenSeaMap";
 export const CHART_FOLDER_API_BASE = "/plugins/signalk-charts-provider-simple";
 export const CHART_CYCLE_SHORTCUT_STORAGE_KEY = "chartCycleShortcut";
 export const DEFAULT_CHART_CYCLE_SHORTCUT = "C";
+export const MAP_FOLLOW_LOOK_AHEAD_STORAGE_KEY =
+	"ajrmMarineMapFollowLookAheadPercent";
+export const MAP_FOLLOW_LOOK_AHEAD_DEFAULT_PERCENT = 66;
+export const MAP_FOLLOW_LOOK_AHEAD_MIN_PERCENT = 50;
+export const MAP_FOLLOW_LOOK_AHEAD_MAX_PERCENT = 80;
+
+export function normalizeMapFollowLookAheadPercent(value) {
+	if (value == null || value === "") {
+		return MAP_FOLLOW_LOOK_AHEAD_DEFAULT_PERCENT;
+	}
+	const number = Number(value);
+	if (!Number.isFinite(number)) return MAP_FOLLOW_LOOK_AHEAD_DEFAULT_PERCENT;
+	return Math.min(
+		MAP_FOLLOW_LOOK_AHEAD_MAX_PERCENT,
+		Math.max(MAP_FOLLOW_LOOK_AHEAD_MIN_PERCENT, Math.round(number)),
+	);
+}
+
+export function loadMapFollowLookAheadPercent(
+	storage = globalThis.localStorage,
+) {
+	return normalizeMapFollowLookAheadPercent(
+		storage?.getItem?.(MAP_FOLLOW_LOOK_AHEAD_STORAGE_KEY),
+	);
+}
+
+export function saveMapFollowLookAheadPercent(
+	value,
+	storage = globalThis.localStorage,
+) {
+	const normalized = normalizeMapFollowLookAheadPercent(value);
+	storage?.setItem?.(
+		MAP_FOLLOW_LOOK_AHEAD_STORAGE_KEY,
+		String(normalized),
+	);
+	return normalized;
+}
+
+/**
+ * Return a north-up Leaflet map centre that leaves the requested share of the
+ * visible chart ahead of a position along COG. `cogRadians` follows Signal K's
+ * standard courseOverGroundTrue unit: radians clockwise from true north.
+ */
+export function mapFollowLookAheadCenter({
+	map,
+	position,
+	cogRadians,
+	lookAheadPercent = loadMapFollowLookAheadPercent(),
+}) {
+	const vesselPosition = [position?.latitude, position?.longitude];
+	const course = Number(cogRadians);
+	const normalizedPercent = normalizeMapFollowLookAheadPercent(lookAheadPercent);
+	if (
+		!Number.isFinite(course) ||
+		normalizedPercent <= 50 ||
+		typeof map?.project !== "function" ||
+		typeof map?.unproject !== "function" ||
+		typeof map?.getSize !== "function"
+	) {
+		return vesselPosition;
+	}
+
+	const size = map.getSize();
+	const width = Number(size?.x);
+	const height = Number(size?.y);
+	if (!(width > 0) || !(height > 0)) return vesselPosition;
+
+	const forwardX = Math.sin(course);
+	const forwardY = -Math.cos(course);
+	const distanceToHorizontalEdge =
+		Math.abs(forwardX) > Number.EPSILON
+			? width / 2 / Math.abs(forwardX)
+			: Number.POSITIVE_INFINITY;
+	const distanceToVerticalEdge =
+		Math.abs(forwardY) > Number.EPSILON
+			? height / 2 / Math.abs(forwardY)
+			: Number.POSITIVE_INFINITY;
+	const distanceToForwardEdge = Math.min(
+		distanceToHorizontalEdge,
+		distanceToVerticalEdge,
+	);
+	if (!Number.isFinite(distanceToForwardEdge)) return vesselPosition;
+
+	const centreShift =
+		((normalizedPercent - 50) / 50) * distanceToForwardEdge;
+	const zoom = map.getZoom?.();
+	const vesselPoint = map.project(vesselPosition, zoom);
+	if (!Number.isFinite(vesselPoint?.x) || !Number.isFinite(vesselPoint?.y)) {
+		return vesselPosition;
+	}
+
+	return map.unproject(
+		{
+			x: vesselPoint.x + forwardX * centreShift,
+			y: vesselPoint.y + forwardY * centreShift,
+		},
+		zoom,
+	);
+}
 
 export function setMapControlHoverHelp(element, label) {
 	if (!element) return element;
@@ -294,6 +393,7 @@ export function createChartCycleControl({
 	L,
 	map,
 	getCharts,
+	isEnabled = () => true,
 	onChange = () => {},
 	position = "topleft",
 	document = globalThis.document,
@@ -321,10 +421,13 @@ export function createChartCycleControl({
 	};
 	const syncButton = () => {
 		if (!button) return;
+		const enabled = isEnabled() !== false;
 		const candidates = state.getCandidates(getCharts(), map);
-		button.disabled = candidates.length < 2;
+		button.disabled = !enabled || candidates.length < 2;
 		const shortcut = chartCycleShortcut(storage);
-		const help = candidates.length < 2
+		const help = !enabled
+			? "Turn on Auto Charts to cycle charts"
+			: candidates.length < 2
 			? "No overlapping charts to cycle"
 			: state.manualChartId
 				? `Cycle overlapping charts [${shortcut}] (${candidates.findIndex((chart) => chartId(chart) === state.manualChartId) + 1} of ${candidates.length})`
@@ -333,6 +436,7 @@ export function createChartCycleControl({
 		button.setAttribute("aria-label", help);
 	};
 	const cycle = () => {
+		if (isEnabled() === false) return null;
 		const candidates = state.getCandidates(getCharts(), map);
 		if (candidates.length < 2) return null;
 		const selected = state.cycle(getCharts(), map);
@@ -383,6 +487,7 @@ export function createChartCycleControl({
 			return selected;
 		},
 		cycle(charts = getCharts(), targetMap = map, positionValue) {
+			if (isEnabled() === false) return null;
 			const selected = state.cycle(charts, targetMap, positionValue);
 			syncButton();
 			return selected;

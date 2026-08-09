@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.6
+
+- Disable Voyage Review's chart-cycle button and keyboard shortcut whenever
+  Auto Charts is off.
+- Update the shared map shell to 0.7.3.
+
 ## 0.9.5
 
 - Add concise purpose headers to every maintained runtime module so its role is
