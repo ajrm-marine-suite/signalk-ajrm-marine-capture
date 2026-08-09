@@ -27,6 +27,8 @@ const elements = {
   startButton: document.getElementById("startButton"),
   stopButton: document.getElementById("stopButton"),
   startReplayCaptureButton: document.getElementById("startReplayCaptureButton"),
+  playAsRecordedButton: document.getElementById("playAsRecordedButton"),
+  stopAsRecordedButton: document.getElementById("stopAsRecordedButton"),
   stopReplayCaptureButton: document.getElementById("stopReplayCaptureButton"),
   interruptReplayCaptureButton: document.getElementById("interruptReplayCaptureButton"),
   replayCaptureInfo: document.getElementById("replayCaptureInfo"),
@@ -60,6 +62,14 @@ elements.startReplayCaptureButton.addEventListener("click", () =>
     file: selectedBundle && selectedBundle.fileName,
     comment: elements.commentInput.value,
   }),
+);
+elements.playAsRecordedButton.addEventListener("click", () =>
+  replayRecorderCommand("play", "/voyage/playback/start", {
+    file: selectedBundle && selectedBundle.fileName,
+  }),
+);
+elements.stopAsRecordedButton.addEventListener("click", () =>
+  replayRecorderCommand("stop-playback", "/voyage/playback/stop", {}),
 );
 elements.stopReplayCaptureButton.addEventListener("click", () =>
   replayRecorderCommand("stop", "/voyage/replay/stop", {}),
@@ -222,8 +232,13 @@ function renderReplayRecorder(status) {
   const playback = status.playback || {};
   const currentVoyage = status.currentVoyage || null;
   const recomputedActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
+  const standaloneActive = playback.mode === "recorded-output";
+  const playbackActive = playback.active === true;
   const selectedReady =
     selectedBundle?.canonicalInput?.contract === status.canonicalInputContract;
+  const selectedRecordedResult =
+    selectedBundle?.recomputedOutput?.contract === status.recomputedOutputContract &&
+    selectedBundle.recomputedOutput.complete === true;
   const replayFinished =
     playback.state === "complete" &&
     playback.complete === true &&
@@ -231,15 +246,25 @@ function renderReplayRecorder(status) {
   const finalisationRunning = status.finalisation?.state === "running";
   const busy = pendingReplayAction === "start" ||
     pendingReplayAction === "stop" ||
-    pendingReplayAction === "abort";
+    pendingReplayAction === "abort" ||
+    pendingReplayAction === "play" ||
+    pendingReplayAction === "stop-playback";
   elements.startReplayCaptureButton.disabled =
-    busy || finalisationRunning || Boolean(currentVoyage) || !selectedReady;
+    busy || finalisationRunning || Boolean(currentVoyage) || playbackActive || !selectedReady;
+  elements.playAsRecordedButton.disabled =
+    busy || finalisationRunning || Boolean(currentVoyage) || playbackActive || !selectedRecordedResult;
+  elements.stopAsRecordedButton.disabled =
+    busy || !standaloneActive || !playbackActive;
   elements.stopReplayCaptureButton.disabled =
     busy || finalisationRunning || !recomputedActive || !replayFinished;
   elements.interruptReplayCaptureButton.disabled =
     busy || finalisationRunning || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
     pendingReplayAction === "start" ? "Starting..." : "Start replay result";
+  elements.playAsRecordedButton.textContent =
+    pendingReplayAction === "play" ? "Starting playback..." : "Play as recorded";
+  elements.stopAsRecordedButton.textContent =
+    pendingReplayAction === "stop-playback" ? "Stopping..." : "Stop playback";
   elements.stopReplayCaptureButton.textContent =
     pendingReplayAction === "stop"
       ? finalisationRunning
@@ -252,9 +277,21 @@ function renderReplayRecorder(status) {
   if (finalisationRunning) {
     elements.replayCaptureInfo.textContent =
       `Replay complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the recomputed voyage"}.`;
+  } else if (standaloneActive && playbackActive) {
+    elements.replayCaptureInfo.textContent =
+      `Playing the stored result from ${playback.fileName || "the selected voyage"} at fixed 1x. Capture is not recording.`;
+  } else if (standaloneActive && playback.state === "complete") {
+    elements.replayCaptureInfo.textContent =
+      `Finished playing ${playback.fileName || "the recorded voyage result"}; no new voyage was created.`;
   } else if (recomputedActive) {
     elements.replayCaptureInfo.textContent =
       `Capture is replaying ${currentVoyage.recomputedReplay.parentVoyage || "the parent voyage"} at fixed 1x and recording recomputed output.`;
+  } else if (selectedRecordedResult && selectedReady) {
+    elements.replayCaptureInfo.textContent =
+      `${selectedBundle.fileName} can be played as recorded or used as canonical input for a new replay result.`;
+  } else if (selectedRecordedResult) {
+    elements.replayCaptureInfo.textContent =
+      `Ready to play the stored result from ${selectedBundle.fileName} without recording.`;
   } else if (selectedReady) {
     elements.replayCaptureInfo.textContent =
       `Ready to replay ${selectedBundle.fileName}.`;
@@ -269,6 +306,7 @@ function renderReplayRecorder(status) {
 
 function renderReplayProgress(status, playback, recomputedActive, replayFinished) {
   const finalisation = status.finalisation || null;
+  const standalonePlayback = playback.mode === "recorded-output";
   if (finalisation?.state === "running") {
     const zip = finalisation.zip || null;
     if (replayFinished || finalisation.streamsClosed === true) {
@@ -324,11 +362,13 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
           : playback.active
             ? `Playing at fixed 1x · effective ${Number(playback.effectiveRatio || 0).toFixed(3)}x`
             : replayFinished
-              ? "Complete · canonical input EOF"
+              ? standalonePlayback
+                ? "Complete · recorded result EOF"
+                : "Complete · canonical input EOF"
               : titleCase(playback.state || "idle");
   }
   elements.replayProgressValue.textContent = totalRecords > 0
-    ? `${replayedRecords} of ${totalRecords} input records · ${percent.toFixed(1)}%`
+    ? `${replayedRecords} of ${totalRecords} ${standalonePlayback ? "recorded result" : "input"} records · ${percent.toFixed(1)}%`
     : "-";
   renderTaskProgress(elements.replayProgressBar, {
     active: playback.state !== "idle" || replayedRecords > 0,
@@ -342,19 +382,21 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
           : "idle",
   });
   elements.replaySegmentsValue.textContent = playback.sourceDurationMs > 0
-    ? `Single monotonic stream · ${formatDuration(playback.sourceDurationMs)} source · maximum lag ${Math.round(playback.maximumObservedLagMs || 0)} ms`
+    ? `Single monotonic ${standalonePlayback ? "recorded-result" : "input"} stream · ${formatDuration(playback.sourceDurationMs)} source · maximum lag ${Math.round(playback.maximumObservedLagMs || 0)} ms`
     : "Single monotonic stream";
   if (!finalisation || !["running", "complete", "failed"].includes(finalisation.state)) {
     elements.replayFinaliseValue.textContent =
-      !recomputedActive
-        ? "Start a canonical voyage replay first."
-        : playback.state === "failed"
-          ? `FAILED: ${playback.error || "Replay timing invalid"}. Interrupt to preserve partial evidence.`
-          : playback.active
-            ? "Available after canonical input EOF."
-            : replayFinished
-              ? "Ready: EOF and valid effective timing confirmed."
-              : "Waiting for replay.";
+      standalonePlayback
+        ? "Not applicable · playback is not being recorded."
+        : !recomputedActive
+          ? "Start a canonical voyage replay first."
+          : playback.state === "failed"
+            ? `FAILED: ${playback.error || "Replay timing invalid"}. Interrupt to preserve partial evidence.`
+            : playback.active
+              ? "Available after canonical input EOF."
+              : replayFinished
+                ? "Ready: EOF and valid effective timing confirmed."
+                : "Waiting for replay.";
   }
 }
 

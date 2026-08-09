@@ -12,7 +12,9 @@ const createPlugin = require("../plugin");
 const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
+  RECOMPUTED_OUTPUT_CONTRACT,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
+  RECORDED_OUTPUT_PLAYBACK_CONTRACT,
   REPLAY_CONTRACT,
   canonicalInputRecord,
 } = require("../plugin/canonical-voyage");
@@ -256,6 +258,157 @@ test("non-canonical voyage bundles fail clearly instead of entering compatibilit
     assert.match(result.body.error, /required ajrm-marine-canonical-input-v1 contract/i);
   } finally {
     plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("completed recorded result plays at fixed 1x without recording another voyage", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-play-as-recorded-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = "voyage-recorded-result.zip";
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    id: "voyage-recorded-result",
+    startedAt: "2026-07-01T10:00:00.000Z",
+    recomputedReplay: {
+      kind: "recomputed-replay",
+      originalFrom: "2026-06-01T08:00:00.000Z",
+    },
+    recomputedOutput: {
+      contract: RECOMPUTED_OUTPUT_CONTRACT,
+      schemaVersion: 1,
+      fileName: RECOMPUTED_OUTPUT_RELATIVE_PATH,
+      complete: true,
+      records: 2,
+    },
+  })));
+  const recordedTimestamp = "2026-07-01T10:00:00.000Z";
+  const outputRecords = [0, 100].map((elapsedMs) => ({
+    contract: RECOMPUTED_OUTPUT_CONTRACT,
+    elapsedMs,
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "signalk-ajrm-marine-traffic",
+        timestamp: recordedTimestamp,
+        values: [{
+          path: "plugins.ajrmMarineTraffic.voyageState",
+          value: { profile: "coastal", sequence: elapsedMs },
+        }],
+      }],
+    },
+  }));
+  zip.addFile(
+    RECOMPUTED_OUTPUT_RELATIVE_PATH,
+    Buffer.from(`${outputRecords.map(JSON.stringify).join("\n")}\n`),
+  );
+  zip.writeZip(path.join(voyageDirectory, fileName));
+
+  const app = fakeApp();
+  const emitted = [];
+  app.handleMessage = (source, delta) => emitted.push({ source, delta });
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const before = await invoke(routes, "GET", "/status");
+    const selected = before.body.voyages.find((voyage) => voyage.fileName === fileName);
+    assert.equal(selected.recomputedOutput.contract, RECOMPUTED_OUTPUT_CONTRACT);
+    assert.equal(selected.recomputedOutput.complete, true);
+
+    const started = await invoke(routes, "POST", "/voyage/playback/start", { file: fileName });
+    assert.equal(started.statusCode, 200);
+    assert.equal(started.body.playback.mode, "recorded-output");
+    assert.equal(started.body.playback.recording, false);
+    await waitFor(async () => {
+      const status = await invoke(routes, "GET", "/status");
+      return status.body.playback.state === "complete";
+    });
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.currentVoyage, null);
+    assert.equal(status.body.lastBundle, null);
+    assert.equal(status.body.playback.contract, RECORDED_OUTPUT_PLAYBACK_CONTRACT);
+    assert.equal(status.body.playback.recordsReplayed, 2);
+    assert.equal(status.body.playback.recording, false);
+    const recordedDeltas = emitted.filter(({ delta }) =>
+      delta.updates?.some((update) =>
+        update.$source === "signalk-ajrm-marine-traffic",
+      ),
+    );
+    assert.equal(recordedDeltas.length, 2);
+    assert.equal(recordedDeltas[0].source, "signalk-ajrm-marine-capture");
+    assert.deepEqual(
+      recordedDeltas[1].delta.updates[0].values[0].value,
+      { profile: "coastal", sequence: 100 },
+    );
+    assert.notEqual(
+      recordedDeltas[0].delta.updates[0].timestamp,
+      recordedTimestamp,
+    );
+    const files = (await fs.readdir(voyageDirectory)).filter((name) => name.endsWith(".zip"));
+    assert.deepEqual(files, [fileName]);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recorded-result playback can be stopped without creating a voyage", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-stop-recorded-output-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = "voyage-long-recorded-result.zip";
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    id: "voyage-long-recorded-result",
+    startedAt: "2026-07-01T10:00:00.000Z",
+    recomputedOutput: {
+      contract: RECOMPUTED_OUTPUT_CONTRACT,
+      complete: true,
+      records: 2,
+    },
+  })));
+  zip.addFile(
+    RECOMPUTED_OUTPUT_RELATIVE_PATH,
+    Buffer.from(`${[0, 60_000].map((elapsedMs) => JSON.stringify({
+      contract: RECOMPUTED_OUTPUT_CONTRACT,
+      elapsedMs,
+      delta: {
+        context: "vessels.self",
+        updates: [{
+          $source: "signalk-ajrm-marine-traffic",
+          timestamp: "2026-07-01T10:00:00.000Z",
+          values: [{ path: "navigation.speedOverGround", value: 2 }],
+        }],
+      },
+    })).join("\n")}\n`),
+  );
+  zip.writeZip(path.join(voyageDirectory, fileName));
+
+  const routes = new Map();
+  const plugin = createPlugin(fakeApp());
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const started = await invoke(routes, "POST", "/voyage/playback/start", {
+      file: fileName,
+    });
+    assert.equal(started.statusCode, 200);
+    const stopped = await invoke(routes, "POST", "/voyage/playback/stop", {});
+    assert.equal(stopped.statusCode, 200);
+    assert.equal(stopped.body.playback.state, "aborted");
+    assert.equal(stopped.body.playback.recording, false);
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.currentVoyage, null);
+    assert.equal(status.body.lastBundle, null);
+    assert.deepEqual(
+      (await fs.readdir(voyageDirectory)).filter((name) => name.endsWith(".zip")),
+      [fileName],
+    );
+  } finally {
+    await plugin.stop();
     await fs.rm(root, { recursive: true, force: true });
   }
 });

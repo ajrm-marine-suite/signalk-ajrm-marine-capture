@@ -36,14 +36,23 @@ test("Recorder command failures keep the error visible while clearing pending st
 
 test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(htmlSource, /id="startReplayCaptureButton"/);
+  assert.match(htmlSource, /id="playAsRecordedButton"/);
+  assert.match(htmlSource, /id="stopAsRecordedButton"/);
   assert.match(htmlSource, /id="stopReplayCaptureButton"/);
   assert.match(htmlSource, /id="interruptReplayCaptureButton"/);
   assert.match(htmlSource, />Interrupt replay<\/button>/);
-  assert.match(htmlSource, /single monotonic input stream server-side at fixed 1x/);
+  assert.match(htmlSource, /replays canonical sensor input at fixed 1x/);
+  assert.match(htmlSource, /plays its stored result at fixed 1x without starting Capture/);
   assert.match(appSource, /"\/voyage\/replay\/start"/);
+  assert.match(appSource, /"\/voyage\/playback\/start"/);
+  assert.match(appSource, /"\/voyage\/playback\/stop"/);
   assert.match(appSource, /"\/voyage\/replay\/stop"/);
   assert.match(appSource, /"\/voyage\/replay\/abort"/);
   assert.match(appSource, /selectedBundle\?\.canonicalInput\?\.contract === status\.canonicalInputContract/);
+  assert.match(
+    appSource,
+    /selectedBundle\?\.recomputedOutput\?\.contract === status\.recomputedOutputContract/,
+  );
   assert.match(appSource, /playback\.state === "complete"/);
   assert.match(appSource, /playback\.valid === true/);
   assert.match(
@@ -62,7 +71,7 @@ test("UI exposes an explicit recomputed replay capture workflow", () => {
   assert.match(appSource, /Complete · finalising recomputed result/);
   assert.match(appSource, /finalisationRunning \|\| !recomputedActive/);
   assert.match(htmlSource, /browser may be closed/);
-  assert.match(htmlSource, /not a current canonical voyage/);
+  assert.match(appSource, /not a current canonical voyage/);
   assert.match(appSource, /window\.confirm/);
 });
 

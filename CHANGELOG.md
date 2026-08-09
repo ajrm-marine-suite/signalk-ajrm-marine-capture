@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.7
+
+- Add **Play as recorded** for completed recomputed voyages. It replays the
+  stored result stream at fixed 1x without opening or recording another voyage.
+- Preserve recorded values while refreshing only Signal K transport timestamps
+  so current consumers do not discard the stored result as stale.
+- Add a separate **Stop playback** action, explicit recorded-output playback
+  status, and HTTP API routes.
+
 ## 0.9.6
 
 - Disable Voyage Review's chart-cycle button and keyboard shortcut whenever

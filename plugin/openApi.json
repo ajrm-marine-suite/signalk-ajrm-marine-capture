@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AJRM Marine Voyages",
-    "version": "0.9.6",
+    "version": "0.9.7",
     "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {
@@ -65,6 +65,12 @@
     },
     "/voyage/replay/start": {
       "post": { "summary": "Start fixed-rate replay and recomputed child recording", "responses": { "200": { "description": "Replay started" }, "400": { "description": "Replay rejected" } } }
+    },
+    "/voyage/playback/start": {
+      "post": { "summary": "Play a completed recorded result without recording a new voyage", "responses": { "200": { "description": "Playback started" }, "400": { "description": "Playback rejected" } } }
+    },
+    "/voyage/playback/stop": {
+      "post": { "summary": "Stop recorded-result playback", "responses": { "200": { "description": "Playback stopped" }, "400": { "description": "Stop rejected" } } }
     },
     "/voyage/replay/stop": {
       "post": { "summary": "Finalise a replay after verified canonical EOF", "responses": { "200": { "description": "Recomputed ZIP completed" }, "400": { "description": "Finalisation rejected" } } }

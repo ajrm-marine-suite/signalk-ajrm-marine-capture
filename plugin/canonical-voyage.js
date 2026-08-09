@@ -10,6 +10,9 @@ const { performance } = require("node:perf_hooks");
 
 const INPUT_CONTRACT = "ajrm-marine-canonical-input-v1";
 const REPLAY_CONTRACT = "ajrm-marine-monotonic-replay-v1";
+const RECOMPUTED_OUTPUT_CONTRACT = "ajrm-marine-recomputed-output-v1";
+const RECORDED_OUTPUT_PLAYBACK_CONTRACT =
+  "ajrm-marine-recorded-output-playback-v1";
 const INPUT_RELATIVE_PATH = "input/sensor-input.jsonl";
 const LEGACY_INPUT_RELATIVE_PATH = "input/yden-input.jsonl";
 const RECOMPUTED_OUTPUT_RELATIVE_PATH = "recomputed/output.jsonl";
@@ -130,22 +133,50 @@ function refreshReplayDelta(record, emittedAt = new Date().toISOString()) {
   return delta;
 }
 
+function refreshRecordedOutputDelta(record, emittedAt = new Date().toISOString()) {
+  if (record?.contract !== RECOMPUTED_OUTPUT_CONTRACT) {
+    throw new Error(
+      `Unsupported recorded output contract: ${record?.contract || "missing"}`,
+    );
+  }
+  const delta = structuredClone(record.delta);
+  delta.updates = (delta.updates || []).map((update) => ({
+    ...update,
+    timestamp: emittedAt,
+  }));
+  return delta;
+}
+
 async function inspectCanonicalInput(filePath) {
+  return inspectReplayFile(filePath, {
+    contract: INPUT_CONTRACT,
+    emptyMessage: "Voyage contains no canonical physical sensor input records",
+  });
+}
+
+async function inspectRecordedOutput(filePath) {
+  return inspectReplayFile(filePath, {
+    contract: RECOMPUTED_OUTPUT_CONTRACT,
+    emptyMessage: "Voyage contains no recorded result records",
+  });
+}
+
+async function inspectReplayFile(filePath, { contract, emptyMessage }) {
   let records = 0;
   let firstElapsedMs = null;
   let lastElapsedMs = null;
   let previousElapsedMs = null;
   await forEachJsonLine(filePath, (record, lineNumber) => {
-    validateCanonicalRecord(record, lineNumber, previousElapsedMs);
+    validateReplayRecord(record, lineNumber, previousElapsedMs, contract);
     const elapsedMs = Number(record.elapsedMs);
     if (firstElapsedMs === null) firstElapsedMs = elapsedMs;
     lastElapsedMs = elapsedMs;
     previousElapsedMs = elapsedMs;
     records += 1;
   });
-  if (!records) throw new Error("Voyage contains no canonical physical sensor input records");
+  if (!records) throw new Error(emptyMessage);
   return {
-    contract: INPUT_CONTRACT,
+    contract,
     records,
     firstElapsedMs,
     lastElapsedMs,
@@ -163,6 +194,46 @@ function createReplayController({
   wait = defaultWait,
   onStatus = () => {},
 }) {
+  return createTimedReplayController({
+    filePath,
+    emitDelta,
+    maximumLagMs,
+    minimumEffectiveRatio,
+    monotonicNowMs,
+    wallClockIso,
+    wait,
+    onStatus,
+    inputContract: INPUT_CONTRACT,
+    replayContract: REPLAY_CONTRACT,
+    inspect: inspectCanonicalInput,
+    refreshDelta: refreshReplayDelta,
+  });
+}
+
+function createRecordedOutputReplayController(options) {
+  return createTimedReplayController({
+    ...options,
+    inputContract: RECOMPUTED_OUTPUT_CONTRACT,
+    replayContract: RECORDED_OUTPUT_PLAYBACK_CONTRACT,
+    inspect: inspectRecordedOutput,
+    refreshDelta: refreshRecordedOutputDelta,
+  });
+}
+
+function createTimedReplayController({
+  filePath,
+  emitDelta,
+  maximumLagMs = 10_000,
+  minimumEffectiveRatio = 0.9,
+  monotonicNowMs = () => performance.now(),
+  wallClockIso = () => new Date().toISOString(),
+  wait = defaultWait,
+  onStatus = () => {},
+  inputContract,
+  replayContract,
+  inspect,
+  refreshDelta,
+}) {
   if (typeof emitDelta !== "function") {
     throw new Error("Replay controller requires emitDelta");
   }
@@ -170,7 +241,8 @@ function createReplayController({
   let cancelReason = null;
   let activeWait = null;
   const status = {
-    contract: REPLAY_CONTRACT,
+    contract: replayContract,
+    inputContract,
     state: "preparing",
     active: false,
     complete: false,
@@ -200,7 +272,7 @@ function createReplayController({
 
   async function run() {
     try {
-      const input = await inspectCanonicalInput(filePath);
+      const input = await inspect(filePath);
       publish({
         state: "ready",
         recordsTotal: input.records,
@@ -219,7 +291,7 @@ function createReplayController({
 
       await forEachJsonLine(filePath, async (record, lineNumber) => {
         if (cancelled) throw cancelledError(cancelReason);
-        validateCanonicalRecord(record, lineNumber, previousElapsedMs);
+        validateReplayRecord(record, lineNumber, previousElapsedMs, inputContract);
         previousElapsedMs = Number(record.elapsedMs);
         const sourceElapsedMs =
           Number(record.elapsedMs) - Number(input.firstElapsedMs);
@@ -242,7 +314,7 @@ function createReplayController({
           );
         }
         const emittedAt = wallClockIso();
-        await emitDelta(refreshReplayDelta(record, emittedAt), record);
+        await emitDelta(refreshDelta(record, emittedAt), record);
         const wallElapsedMs = Math.max(0, monotonicNowMs() - startedPacingMs);
         const effectiveRate =
           wallElapsedMs > 0 ? sourceElapsedMs / wallElapsedMs : 1;
@@ -308,8 +380,8 @@ function createReplayController({
   };
 }
 
-function validateCanonicalRecord(record, lineNumber, previousElapsedMs) {
-  if (record?.contract !== INPUT_CONTRACT) {
+function validateReplayRecord(record, lineNumber, previousElapsedMs, contract) {
+  if (record?.contract !== contract) {
     throw new Error(
       `Unsupported input contract on line ${lineNumber}: ${record?.contract || "missing"}`,
     );
@@ -384,13 +456,18 @@ module.exports = {
   LEGACY_INPUT_RELATIVE_PATH,
   PHYSICAL_SOURCE_TYPES,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
+  RECOMPUTED_OUTPUT_CONTRACT,
+  RECORDED_OUTPUT_PLAYBACK_CONTRACT,
   REPLAY_CONTRACT,
   canonicalInputRecord,
   createReplayController,
+  createRecordedOutputReplayController,
   extractCanonicalInputDelta,
   inspectCanonicalInput,
+  inspectRecordedOutput,
   normalizeSourcePrefixes,
   refreshReplayDelta,
+  refreshRecordedOutputDelta,
   sourceLabel,
   sourceDetails,
 };

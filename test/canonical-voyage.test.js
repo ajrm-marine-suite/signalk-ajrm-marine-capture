@@ -8,11 +8,15 @@ const test = require("node:test");
 
 const {
   INPUT_CONTRACT,
+  RECOMPUTED_OUTPUT_CONTRACT,
+  RECORDED_OUTPUT_PLAYBACK_CONTRACT,
   canonicalInputRecord,
+  createRecordedOutputReplayController,
   createReplayController,
   extractCanonicalInputDelta,
   inspectCanonicalInput,
   refreshReplayDelta,
+  refreshRecordedOutputDelta,
 } = require("../plugin/canonical-voyage");
 
 test("canonical input accepts a physical NMEA source and excludes derived updates", () => {
@@ -92,6 +96,54 @@ test("replay refreshes update and navigation datetime timestamps", () => {
   const replayed = refreshReplayDelta(record, "2026-08-01T09:00:00.000Z");
   assert.equal(replayed.updates[0].timestamp, "2026-08-01T09:00:00.000Z");
   assert.equal(replayed.updates[0].values[0].value, "2026-08-01T09:00:00.000Z");
+});
+
+test("recorded-result playback preserves values while refreshing transport timestamps", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-recorded-output-"));
+  const file = path.join(root, "output.jsonl");
+  const recordedDatetime = "2026-07-17T12:00:00.000Z";
+  const records = [0, 100].map((elapsedMs) => ({
+    contract: RECOMPUTED_OUTPUT_CONTRACT,
+    elapsedMs,
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "signalk-ajrm-marine-traffic",
+        timestamp: recordedDatetime,
+        values: [
+          { path: "navigation.datetime", value: recordedDatetime },
+          { path: "plugins.ajrmMarineTraffic.voyageState", value: { profile: "coastal" } },
+        ],
+      }],
+    },
+  }));
+  await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
+  let now = 1000;
+  const emitted = [];
+  const replay = createRecordedOutputReplayController({
+    filePath: file,
+    monotonicNowMs: () => now,
+    wallClockIso: () => new Date(now).toISOString(),
+    wait: (milliseconds) => { now += milliseconds; return Promise.resolve(); },
+    emitDelta: (delta) => emitted.push(delta),
+  });
+  const result = await replay.run();
+  assert.equal(result.contract, RECORDED_OUTPUT_PLAYBACK_CONTRACT);
+  assert.equal(result.inputContract, RECOMPUTED_OUTPUT_CONTRACT);
+  assert.equal(result.recordsReplayed, 2);
+  assert.equal(result.valid, true);
+  assert.equal(emitted[0].updates[0].timestamp, new Date(1000).toISOString());
+  assert.equal(emitted[0].updates[0].values[0].value, recordedDatetime);
+  assert.deepEqual(
+    emitted[0].updates[0].values[1].value,
+    { profile: "coastal" },
+  );
+  assert.deepEqual(
+    refreshRecordedOutputDelta(records[0], "2026-08-09T12:00:00.000Z")
+      .updates[0].values,
+    records[0].delta.updates[0].values,
+  );
+  await fs.rm(root, { recursive: true, force: true });
 });
 
 test("canonical input inspection rejects backwards elapsed time", async () => {

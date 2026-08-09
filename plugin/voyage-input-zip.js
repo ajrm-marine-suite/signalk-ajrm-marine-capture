@@ -11,6 +11,7 @@ const yauzl = require("yauzl");
 const {
   INPUT_RELATIVE_PATH,
   LEGACY_INPUT_RELATIVE_PATH,
+  RECOMPUTED_OUTPUT_RELATIVE_PATH,
 } = require("./canonical-voyage");
 
 const INPUT_ENTRY_CANDIDATES = new Set([
@@ -19,6 +20,30 @@ const INPUT_ENTRY_CANDIDATES = new Set([
 ]);
 
 function extractCanonicalInputFromZip(zipPath, targetPath) {
+  return extractVoyageEntryFromZip(zipPath, targetPath, {
+    candidates: INPUT_ENTRY_CANDIDATES,
+    missingMessage:
+      `Parent voyage does not contain the required canonical input ${INPUT_RELATIVE_PATH}`,
+    readMessage: "Unable to read canonical voyage input",
+    emptyMessage: "Canonical voyage input is empty",
+  });
+}
+
+function extractRecomputedOutputFromZip(zipPath, targetPath) {
+  return extractVoyageEntryFromZip(zipPath, targetPath, {
+    candidates: new Set([RECOMPUTED_OUTPUT_RELATIVE_PATH]),
+    missingMessage:
+      `Voyage does not contain the required recorded result ${RECOMPUTED_OUTPUT_RELATIVE_PATH}`,
+    readMessage: "Unable to read recorded voyage result",
+    emptyMessage: "Recorded voyage result is empty",
+  });
+}
+
+function extractVoyageEntryFromZip(
+  zipPath,
+  targetPath,
+  { candidates, missingMessage, readMessage, emptyMessage },
+) {
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (openError, zip) => {
       if (openError || !zip) {
@@ -35,14 +60,10 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
       };
       zip.once("error", (error) => finish(error));
       zip.once("end", () => {
-        finish(
-          new Error(
-            `Parent voyage does not contain the required canonical input ${INPUT_RELATIVE_PATH}`,
-          ),
-        );
+        finish(new Error(missingMessage));
       });
       zip.on("entry", (entry) => {
-        if (!INPUT_ENTRY_CANDIDATES.has(entry.fileName) || /\/$/.test(entry.fileName)) {
+        if (!candidates.has(entry.fileName) || /\/$/.test(entry.fileName)) {
           zip.readEntry();
           return;
         }
@@ -50,7 +71,7 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
           .then(() => {
             zip.openReadStream(entry, (streamError, input) => {
               if (streamError || !input) {
-                finish(streamError || new Error("Unable to read canonical voyage input"));
+                finish(streamError || new Error(readMessage));
                 return;
               }
               const temporaryPath = `${targetPath}.partial-${process.pid}-${Date.now()}`;
@@ -75,7 +96,7 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
                   )
                   .then((info) => {
                     if (!info.isFile() || info.size <= 0) {
-                      throw new Error("Canonical voyage input is empty");
+                      throw new Error(emptyMessage);
                     }
                     finish(null, {
                       path: targetPath,
@@ -99,4 +120,5 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
 
 module.exports = {
   extractCanonicalInputFromZip,
+  extractRecomputedOutputFromZip,
 };

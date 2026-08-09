@@ -50,7 +50,7 @@
             <button id="saveCommentButton" type="button" class="secondary">Save comment</button>
           </div>
           <div class="replay-capture">
-            <h3>Recomputed voyage replay</h3>
+            <h3>Voyage playback</h3>
             <p id="replayCaptureInfo">Select a canonical voyage bundle below.</p>
             <dl class="replay-status" aria-live="polite">
               <div><dt>Capture replay</dt><dd id="replayPlaybackState">Idle</dd></div>
@@ -72,10 +72,12 @@
             </dl>
             <div class="actions">
               <button id="startReplayCaptureButton" type="button">Start replay result</button>
+              <button id="playAsRecordedButton" type="button" class="secondary">Play as recorded</button>
+              <button id="stopAsRecordedButton" type="button" class="secondary">Stop playback</button>
               <button id="stopReplayCaptureButton" type="button" class="secondary">Finalise now</button>
               <button id="interruptReplayCaptureButton" type="button" class="delete-button">Interrupt replay</button>
             </div>
-            <p class="field-note">Select a voyage containing canonical input, then press Start replay result. Capture replays the single monotonic input stream server-side at fixed 1x and records recomputed output; the browser may be closed. Verified canonical input EOF automatically stops recording and builds the ZIP. Finalise now remains as a fallback after verified EOF. Interrupt replay preserves partial output in an explicitly incomplete, unverified ZIP. A bundle without canonical input is not a current canonical voyage and cannot be replayed.</p>
+            <p class="field-note"><strong>Start replay result</strong> replays canonical sensor input at fixed 1x and records a new recomputed child voyage. <strong>Play as recorded</strong> is available for a completed recomputed voyage and plays its stored result at fixed 1x without starting Capture, making another voyage, or building a ZIP. Stop playback ends that read-only playback. Both playback modes run server-side, so the browser may be closed. Verified canonical input EOF automatically stops result recording and builds its ZIP. Finalise now remains as a fallback after verified EOF; Interrupt replay preserves partial output in an explicitly incomplete, unverified ZIP. A voyage without current canonical input or a completed recorded result cannot use the corresponding action.</p>
           </div>
         </article>
 

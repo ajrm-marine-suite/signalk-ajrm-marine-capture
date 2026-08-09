@@ -7,8 +7,8 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.9.6` disables Voyage Review chart cycling while Auto Charts is off,
-matching the other suite map applications.
+Version `0.9.7` adds fixed-1x playback of a completed stored voyage result
+without recording another voyage.
 
 ## The simple data model
 
@@ -40,7 +40,8 @@ A recomputed child voyage writes the active Signal K result stream to:
 recomputed/output.jsonl
 ```
 
-That file is evidence only. It is never accepted as replay input.
+That file is the recorded result stream. Capture can play a completed copy
+without starting another recording.
 
 ## Replay
 
@@ -78,6 +79,23 @@ verified only when Capture has both:
 - valid effective timing.
 
 Interrupting replay produces an explicitly incomplete, unverified ZIP.
+
+### Play a completed result as recorded
+
+Select a completed recomputed voyage and press **Play as recorded** to emit its
+stored `recomputed/output.jsonl` stream at fixed `1x`. Capture does not open a
+new voyage, collect snapshots, write another result stream, or build another
+ZIP. **Stop playback** ends it before EOF.
+
+The recorded delta values are preserved, including the recorded
+`navigation.datetime`. Only each Signal K update's transport timestamp is
+refreshed as it is emitted so current consumers do not reject the stored result
+as stale. This action is available only when the ZIP declares a complete
+`ajrm-marine-recomputed-output-v1` result. An ordinary sensor-input-only voyage
+must first use **Start replay result** if a stored result is required.
+
+Both playback modes run on the Signal K server and continue if the browser is
+closed.
 
 ## Ordinary voyage recording
 
@@ -130,6 +148,8 @@ POST /voyage/stop
 POST /voyage/replay/start
 POST /voyage/replay/stop
 POST /voyage/replay/abort
+POST /voyage/playback/start
+POST /voyage/playback/stop
 GET  /voyage/observations
 POST /voyage/observations
 ```
@@ -144,7 +164,7 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.9.6 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.9.7 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 
