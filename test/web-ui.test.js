@@ -34,15 +34,17 @@ test("Recorder command failures keep the error visible while clearing pending st
   assert.match(appSource, /finally \{\s*pendingRecorderAction = null;\s*renderRecorderButtons\(latestStatus \|\| \{\}\);/s);
 });
 
-test("UI exposes an explicit recomputed replay capture workflow", () => {
+test("UI distinguishes algorithmic voyage reprocessing from saved-result replay", () => {
   assert.match(htmlSource, /id="startReplayCaptureButton"/);
   assert.match(htmlSource, /id="playAsRecordedButton"/);
   assert.match(htmlSource, /id="stopAsRecordedButton"/);
   assert.match(htmlSource, /id="stopReplayCaptureButton"/);
   assert.match(htmlSource, /id="interruptReplayCaptureButton"/);
   assert.match(htmlSource, />Interrupt replay<\/button>/);
-  assert.match(htmlSource, /replays canonical sensor input at fixed 1x/);
-  assert.match(htmlSource, /plays its stored result at fixed 1x without starting Capture/);
+  assert.match(htmlSource, /Reprocess voyage with current algorithms/);
+  assert.match(htmlSource, /runs the recorded sensor inputs through the currently installed/);
+  assert.match(htmlSource, /Replay saved voyage/);
+  assert.match(htmlSource, /without recalculating or recording it/);
   assert.match(appSource, /"\/voyage\/replay\/start"/);
   assert.match(appSource, /"\/voyage\/playback\/start"/);
   assert.match(appSource, /"\/voyage\/playback\/stop"/);

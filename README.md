@@ -7,8 +7,8 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.9.7` adds fixed-1x playback of a completed stored voyage result
-without recording another voyage.
+Version `0.9.8` distinguishes voyage reprocessing through current algorithms
+from replaying an already saved result.
 
 ## The simple data model
 
@@ -45,7 +45,8 @@ without starting another recording.
 
 ## Replay
 
-Select a canonical voyage ZIP in Capture and press **Start replay result**.
+Select a canonical voyage ZIP in Capture and press
+**Reprocess voyage with current algorithms**.
 Capture:
 
 1. scans `input/sensor-input.jsonl` once and rejects malformed or backwards
@@ -82,17 +83,18 @@ Interrupting replay produces an explicitly incomplete, unverified ZIP.
 
 ### Play a completed result as recorded
 
-Select a completed recomputed voyage and press **Play as recorded** to emit its
-stored `recomputed/output.jsonl` stream at fixed `1x`. Capture does not open a
-new voyage, collect snapshots, write another result stream, or build another
-ZIP. **Stop playback** ends it before EOF.
+Select a completed recomputed voyage and press **Replay saved voyage** to emit
+its stored `recomputed/output.jsonl` stream at fixed `1x`. Capture does not
+open a new voyage, collect snapshots, write another result stream, or build
+another ZIP. **Stop playback** ends it before EOF.
 
 The recorded delta values are preserved, including the recorded
 `navigation.datetime`. Only each Signal K update's transport timestamp is
 refreshed as it is emitted so current consumers do not reject the stored result
 as stale. This action is available only when the ZIP declares a complete
 `ajrm-marine-recomputed-output-v1` result. An ordinary sensor-input-only voyage
-must first use **Start replay result** if a stored result is required.
+must first use **Reprocess voyage with current algorithms** if a stored result
+is required.
 
 Both playback modes run on the Signal K server and continue if the browser is
 closed.
@@ -164,7 +166,7 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.9.7 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.9.8 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

@@ -965,7 +965,7 @@ module.exports = function ajrmMarineCapture(app) {
     }
     const fileName = safeBaseName(file);
     if (!fileName || !fileName.endsWith(".zip")) {
-      throw new Error("Select a completed recomputed voyage ZIP to play as recorded");
+      throw new Error("Select a voyage ZIP containing a completed saved result to replay");
     }
     const voyagePath = path.join(options.voyageDirectory, fileName);
     const info = await fs.promises.stat(voyagePath).catch(() => null);
@@ -976,7 +976,7 @@ module.exports = function ajrmMarineCapture(app) {
       index.recomputedOutput.complete !== true
     ) {
       throw new Error(
-        "This voyage has no completed recorded result. Use Start replay result to create one first.",
+        "This voyage has no completed saved result. Reprocess the voyage with current algorithms first.",
       );
     }
     const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");

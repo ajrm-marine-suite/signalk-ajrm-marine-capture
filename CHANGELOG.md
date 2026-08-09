@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.8
+
+- Rename the two voyage operations to distinguish them by outcome:
+  **Reprocess voyage with current algorithms** creates and saves a newly
+  calculated result, while **Replay saved voyage** plays an existing result
+  without recalculation or recording.
+- Align status, validation, help and README wording with those operator-facing
+  terms.
+
 ## 0.9.7
 
 - Add **Play as recorded** for completed recomputed voyages. It replays the

@@ -260,9 +260,11 @@ function renderReplayRecorder(status) {
   elements.interruptReplayCaptureButton.disabled =
     busy || finalisationRunning || !recomputedActive;
   elements.startReplayCaptureButton.textContent =
-    pendingReplayAction === "start" ? "Starting..." : "Start replay result";
+    pendingReplayAction === "start"
+      ? "Starting reprocessing..."
+      : "Reprocess voyage with current algorithms";
   elements.playAsRecordedButton.textContent =
-    pendingReplayAction === "play" ? "Starting playback..." : "Play as recorded";
+    pendingReplayAction === "play" ? "Starting replay..." : "Replay saved voyage";
   elements.stopAsRecordedButton.textContent =
     pendingReplayAction === "stop-playback" ? "Stopping..." : "Stop playback";
   elements.stopReplayCaptureButton.textContent =
@@ -288,13 +290,13 @@ function renderReplayRecorder(status) {
       `Capture is replaying ${currentVoyage.recomputedReplay.parentVoyage || "the parent voyage"} at fixed 1x and recording recomputed output.`;
   } else if (selectedRecordedResult && selectedReady) {
     elements.replayCaptureInfo.textContent =
-      `${selectedBundle.fileName} can be played as recorded or used as canonical input for a new replay result.`;
+      `${selectedBundle.fileName} can be replayed from its saved result or reprocessed using the current algorithms.`;
   } else if (selectedRecordedResult) {
     elements.replayCaptureInfo.textContent =
-      `Ready to play the stored result from ${selectedBundle.fileName} without recording.`;
+      `Ready to replay the saved result from ${selectedBundle.fileName} without recalculating or recording.`;
   } else if (selectedReady) {
     elements.replayCaptureInfo.textContent =
-      `Ready to replay ${selectedBundle.fileName}.`;
+      `Ready to reprocess ${selectedBundle.fileName} with the current algorithms.`;
   } else if (selectedBundle) {
     elements.replayCaptureInfo.textContent =
       `${selectedBundle.fileName} is not a current canonical voyage and cannot be replayed.`;
@@ -389,7 +391,7 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
       standalonePlayback
         ? "Not applicable · playback is not being recorded."
         : !recomputedActive
-          ? "Start a canonical voyage replay first."
+          ? "Select a voyage with recorded sensor input to reprocess."
           : playback.state === "failed"
             ? `FAILED: ${playback.error || "Replay timing invalid"}. Interrupt to preserve partial evidence.`
             : playback.active
