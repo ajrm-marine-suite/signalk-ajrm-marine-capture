@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.2
+
+- Latch the voyage Play control disabled as soon as it is pressed and keep it
+  disabled while the server is preparing the selected voyage.
+
 ## 0.10.1
 
 - Stream calculated-result recording through gzip to bound temporary disk use

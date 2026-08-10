@@ -50,6 +50,7 @@ let selectedBundle = null;
 let pendingRecorderAction = null;
 let recorderActionLatch = null;
 let pendingReplayAction = null;
+let replayPlayLatch = false;
 let latestStatus = null;
 
 elements.refreshButton.addEventListener("click", refresh);
@@ -234,7 +235,8 @@ async function replayRecorderCommand(action, path, body) {
   pendingReplayAction = action;
   renderReplayRecorder(latestStatus || {});
   try {
-    await command(path, body);
+    const ok = await command(path, body);
+    if (action === "play") replayPlayLatch = ok;
   } finally {
     pendingReplayAction = null;
     renderReplayRecorder(latestStatus || {});
@@ -254,6 +256,12 @@ function renderReplayRecorder(status) {
   const recaptureActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
   const playbackActive = playback.active === true;
   const playbackPaused = playback.paused === true;
+  if (
+    replayPlayLatch &&
+    (playbackActive || ["complete", "failed", "aborted"].includes(playback.state))
+  ) {
+    replayPlayLatch = false;
+  }
   const selectedReady = selectedBundle?.hasInputs === true ||
     selectedBundle?.canonicalInput?.contract === status.canonicalInputContract;
   const selectedRecordedResult = selectedBundle?.hasSavedResults === true ||
@@ -265,7 +273,8 @@ function renderReplayRecorder(status) {
     playback.complete === true &&
     playback.valid === true;
   const finalisationRunning = status.finalisation?.state === "running";
-  const busy = pendingReplayAction === "play" ||
+  const busy = replayPlayLatch ||
+    pendingReplayAction === "play" ||
     pendingReplayAction === "pause" ||
     pendingReplayAction === "resume" ||
     pendingReplayAction === "stop" ||
