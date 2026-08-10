@@ -273,6 +273,11 @@ function renderReplayRecorder(status) {
     playback.complete === true &&
     playback.valid === true;
   const finalisationRunning = status.finalisation?.state === "running";
+  const playbackPreparing = !playbackActive && (
+    pendingReplayAction === "play" ||
+    replayPlayLatch ||
+    playback.state === "preparing"
+  );
   const busy = replayPlayLatch ||
     pendingReplayAction === "play" ||
     pendingReplayAction === "pause" ||
@@ -296,10 +301,19 @@ function renderReplayRecorder(status) {
     (!playbackActive && playback.state === "idle");
   elements.backPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
   elements.forwardPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
-  renderReplayProgress(status, playback, recaptureActive, replayFinished);
+  renderReplayProgress(
+    status,
+    playback,
+    recaptureActive,
+    replayFinished,
+    playbackPreparing,
+  );
   if (finalisationRunning) {
     elements.replayCaptureInfo.textContent =
       `Recapture complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the new voyage"}.`;
+  } else if (playbackPreparing) {
+    elements.replayCaptureInfo.textContent =
+      `Preparing ${selectedBundle?.fileName || playback.fileName || "the selected voyage"} for playback.`;
   } else if (playbackActive) {
     elements.replayCaptureInfo.textContent =
       `${playbackPaused ? "Paused" : "Playing"} ${playback.fileName || "the selected voyage"} using ${playback.mode === "recorded-output" ? "saved results" : "fresh calculations"}${recaptureActive ? " and saving a new recaptured voyage" : " without recording"}.`;
@@ -327,7 +341,13 @@ function renderReplayRecorder(status) {
   }
 }
 
-function renderReplayProgress(status, playback, recomputedActive, replayFinished) {
+function renderReplayProgress(
+  status,
+  playback,
+  recomputedActive,
+  replayFinished,
+  playbackPreparing,
+) {
   const finalisation = status.finalisation || null;
   const standalonePlayback = playback.mode === "recorded-output";
   if (finalisation?.state === "running") {
@@ -378,7 +398,9 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
 
   if (!(finalisation?.state === "running" && (replayFinished || finalisation.streamsClosed === true))) {
     elements.replayPlaybackState.textContent =
-      playback.state === "failed"
+      playbackPreparing
+        ? "Preparing…"
+        : playback.state === "failed"
         ? `FAILED · ${playback.error || "timing failure"}`
         : playback.state === "aborted"
           ? "Interrupted"
@@ -390,19 +412,23 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
                 : "Complete · canonical input EOF"
               : titleCase(playback.state || "idle");
   }
-  elements.replayProgressValue.textContent = totalRecords > 0
-    ? `${replayedRecords} of ${totalRecords} ${standalonePlayback ? "recorded result" : "input"} records · ${percent.toFixed(1)}%`
-    : "-";
+  elements.replayProgressValue.textContent = playbackPreparing
+    ? "Extracting and validating the voyage stream…"
+    : totalRecords > 0
+      ? `${replayedRecords} of ${totalRecords} ${standalonePlayback ? "recorded result" : "input"} records · ${percent.toFixed(1)}%`
+      : "-";
   renderTaskProgress(elements.replayProgressBar, {
-    active: playback.state !== "idle" || replayedRecords > 0,
+    active: playbackPreparing || playback.state !== "idle" || replayedRecords > 0,
     percent,
     state: playback.state === "failed"
       ? "failed"
-      : replayFinished
-        ? "complete"
-        : playback.active
-          ? "running"
-          : "idle",
+      : playbackPreparing
+        ? "running"
+        : replayFinished
+          ? "complete"
+          : playback.active
+            ? "running"
+            : "idle",
   });
   elements.replaySegmentsValue.textContent = playback.sourceDurationMs > 0
     ? `Single monotonic ${standalonePlayback ? "recorded-result" : "input"} stream · ${formatDuration(playback.sourceDurationMs)} source · maximum lag ${Math.round(playback.maximumObservedLagMs || 0)} ms`

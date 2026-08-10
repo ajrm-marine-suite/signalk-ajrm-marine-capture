@@ -35,7 +35,7 @@ test("Recorder command failures keep the error visible while clearing pending st
 });
 
 test("UI exposes one explicit player with saved-result and recapture modes", () => {
-  assert.match(htmlSource, /app\.js\?v=0\.10\.2/);
+  assert.match(htmlSource, /app\.js\?v=0\.10\.3/);
   assert.match(htmlSource, /id="recordOutputsToggle"/);
   assert.match(htmlSource, /Record calculated results as well as sensor inputs/);
   assert.match(htmlSource, /id="useSavedResultsToggle"/);
@@ -79,6 +79,8 @@ test("UI exposes one explicit player with saved-result and recapture modes", () 
   assert.match(appSource, /let replayPlayLatch = false/);
   assert.match(appSource, /if \(action === "play"\) replayPlayLatch = ok/);
   assert.match(appSource, /const busy = replayPlayLatch \|\|/);
+  assert.match(appSource, /playbackPreparing\s*\? "Preparing…"/);
+  assert.match(appSource, /Extracting and validating the voyage stream…/);
 });
 
 test("Voyage downloads stream through the browser without buffering the ZIP in memory", () => {

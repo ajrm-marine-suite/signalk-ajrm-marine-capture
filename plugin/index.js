@@ -1120,23 +1120,6 @@ module.exports = function ajrmMarineCapture(app) {
       useSavedResults: true,
       startAtMs: Math.max(0, Number(startAtMs) || 0),
     };
-    await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
-    const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
-    await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
-    standalonePlaybackPath = path.join(
-      replayWorkDirectory,
-      `recorded-output-${randomUUID()}.jsonl`,
-    );
-    try {
-      await extractRecomputedOutputFromZip(
-        voyagePath,
-        standalonePlaybackPath,
-        index.recomputedOutput.fileName,
-      );
-    } catch (error) {
-      await cleanupStandalonePlayback();
-      throw error;
-    }
     finalisation = null;
     const originalFrom =
       index.recomputedReplay?.originalFrom ||
@@ -1164,6 +1147,32 @@ module.exports = function ajrmMarineCapture(app) {
       contract: RECORDED_OUTPUT_PLAYBACK_CONTRACT,
       state: "preparing",
     });
+    publishState();
+    try {
+      await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
+      const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
+      await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
+      standalonePlaybackPath = path.join(
+        replayWorkDirectory,
+        `recorded-output-${randomUUID()}.jsonl`,
+      );
+      await extractRecomputedOutputFromZip(
+        voyagePath,
+        standalonePlaybackPath,
+        index.recomputedOutput.fileName,
+      );
+    } catch (error) {
+      await cleanupStandalonePlayback();
+      standalonePlaybackSpec = null;
+      playback = withMetadata({
+        ...idlePlaybackStatus(),
+        contract: RECORDED_OUTPUT_PLAYBACK_CONTRACT,
+        state: "failed",
+        error: error.message,
+      });
+      publishState();
+      throw error;
+    }
     movementSuppressedUntilFreshSpeed = true;
     movingSinceMs = null;
     replayController = createRecordedOutputReplayController({
@@ -1236,25 +1245,12 @@ module.exports = function ajrmMarineCapture(app) {
     ) {
       throw new Error("This voyage has no complete canonical sensor-input stream");
     }
-    const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
-    await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
-    standalonePlaybackPath = path.join(
-      replayWorkDirectory,
-      `canonical-input-${randomUUID()}.jsonl`,
-    );
-    try {
-      await extractCanonicalInputFromZip(voyagePath, standalonePlaybackPath);
-    } catch (error) {
-      await cleanupStandalonePlayback();
-      throw error;
-    }
     standalonePlaybackSpec = {
       file: fileName,
       mode: "canonical-input",
       useSavedResults: false,
       startAtMs: Math.max(0, Number(startAtMs) || 0),
     };
-    await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
     finalisation = null;
     const originalFrom = index.startedAt || null;
     const withMetadata = (status) => {
@@ -1278,6 +1274,28 @@ module.exports = function ajrmMarineCapture(app) {
       contract: REPLAY_CONTRACT,
       state: "preparing",
     });
+    publishState();
+    try {
+      await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
+      const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
+      await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
+      standalonePlaybackPath = path.join(
+        replayWorkDirectory,
+        `canonical-input-${randomUUID()}.jsonl`,
+      );
+      await extractCanonicalInputFromZip(voyagePath, standalonePlaybackPath);
+    } catch (error) {
+      await cleanupStandalonePlayback();
+      standalonePlaybackSpec = null;
+      playback = withMetadata({
+        ...idlePlaybackStatus(),
+        contract: REPLAY_CONTRACT,
+        state: "failed",
+        error: error.message,
+      });
+      publishState();
+      throw error;
+    }
     movementSuppressedUntilFreshSpeed = true;
     movingSinceMs = null;
     replayController = createReplayController({
@@ -1540,6 +1558,14 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function startCanonicalReplay(voyage) {
+    playback = {
+      ...idlePlaybackStatus(),
+      state: "preparing",
+      fileName: voyage.recomputedReplay.parentVoyage,
+      inputContract: INPUT_CONTRACT,
+      replayContract: REPLAY_CONTRACT,
+    };
+    publishState();
     const replayWorkDirectory = path.join(
       options.voyageDirectory,
       ".replay-work",
@@ -1563,13 +1589,6 @@ module.exports = function ajrmMarineCapture(app) {
       inheritedFrom: voyage.recomputedReplay?.parentVoyage || null,
     };
     delete voyage.recomputedReplay.parentVoyagePath;
-    playback = {
-      ...idlePlaybackStatus(),
-      state: "preparing",
-      fileName: voyage.recomputedReplay.parentVoyage,
-      inputContract: INPUT_CONTRACT,
-      replayContract: REPLAY_CONTRACT,
-    };
     movementSuppressedUntilFreshSpeed = true;
     movingSinceMs = null;
     voyage.replayWarmupActive = true;

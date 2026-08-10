@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.3
+
+- Show `Preparing…` immediately after Play instead of leaving the player at
+  `Idle` while the server restores the route and extracts the voyage stream.
+- Publish server-side preparation state before potentially slow ZIP extraction,
+  decompression, copying, and validation begin.
+
 ## 0.10.2
 
 - Latch the voyage Play control disabled as soon as it is pressed and keep it
