@@ -126,6 +126,62 @@ test("Capture records canonical physical input and excludes derived updates", as
   }
 });
 
+test("ordinary voyage optionally records a complete calculated-result stream", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-live-results-"));
+  const voyageDirectory = path.join(root, "voyages");
+  const app = fakeApp();
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({
+    enabled: false,
+    recordOutputs: true,
+    voyageDirectory,
+    captureMode: "minimal",
+    deleteWorkingDirectoryAfterZip: false,
+  });
+
+  try {
+    await invoke(routes, "POST", "/voyage/start", {});
+    app.signalk.emit("delta", {
+      context: "vessels.self",
+      updates: [{
+        $source: "n2k-gateway.2",
+        source: { label: "n2k-gateway", type: "NMEA2000" },
+        values: [{ path: "navigation.speedOverGround", value: 1.2 }],
+      }],
+    });
+    app.signalk.emit("delta", {
+      context: "vessels.self",
+      updates: [{
+        $source: "signalk-ajrm-marine-traffic",
+        values: [{ path: "plugins.ajrmMarineTraffic.voyageState", value: { moving: true } }],
+      }],
+    });
+    const stopped = await invoke(routes, "POST", "/voyage/stop", {});
+    const zip = new AdmZip(stopped.body.bundle.path);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.canonicalInput.complete, true);
+    assert.equal(index.recomputedOutput.complete, true);
+    assert.equal(index.recomputedOutput.origin, "live");
+    assert.equal(index.recomputedOutput.records, 2);
+    assert.equal(zip.getEntry(RECOMPUTED_OUTPUT_RELATIVE_PATH) !== null, true);
+    const status = await invoke(routes, "GET", "/status");
+    const listed = status.body.voyages.find(
+      (voyage) => voyage.fileName === stopped.body.bundle.fileName,
+    );
+    assert.equal(listed.contents, "inputs-and-results");
+    assert.equal(listed.contentsLabel, "Inputs + saved results");
+    assert.equal(listed.integrity, "complete");
+    assert.equal(listed.hasInputs, true);
+    assert.equal(listed.hasSavedResults, true);
+    assert.equal(listed.resultOrigin, "live");
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Capture replays canonical input at fixed 1x and automatically builds a verified child ZIP at EOF", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-merged-replay-"));
   const voyageDirectory = path.join(root, "voyages");
@@ -181,11 +237,13 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
   });
 
   try {
-    const started = await invoke(routes, "POST", "/voyage/replay/start", {
+    const started = await invoke(routes, "POST", "/voyage/player/play", {
       file: parentFileName,
+      useSavedResults: true,
+      recapture: true,
     });
     assert.equal(started.statusCode, 200);
-    assert.equal(started.body.voyage.recomputedReplay.inputContract, INPUT_CONTRACT);
+    assert.equal(started.body.result.recomputedReplay.inputContract, INPUT_CONTRACT);
     await waitFor(async () => {
       const status = await invoke(routes, "GET", "/status");
       if (status.body.playback.state === "failed") {
@@ -228,6 +286,10 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
     );
     assert.equal(index.recomputedOutput.complete, true);
     assert.equal(index.recomputedOutput.records, 3);
+    assert.equal(index.recomputedOutput.origin, "recaptured");
+    assert.equal(index.canonicalInput.complete, true);
+    assert.equal(index.canonicalInput.inheritedFrom, parentFileName);
+    assert.ok(zip.getEntry(INPUT_RELATIVE_PATH));
     assert.ok(zip.getEntry(RECOMPUTED_OUTPUT_RELATIVE_PATH));
     const checkpoint = JSON.parse(
       zip.readAsText("system/recomputed-replay-completion.json"),
@@ -355,6 +417,66 @@ test("completed recorded result plays at fixed 1x without recording another voya
   }
 });
 
+test("input-only voyage plays with fresh calculations without creating a child", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-fresh-playback-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = "voyage-input-only.zip";
+  const zip = new AdmZip();
+  const records = [0, 20].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: 1.2 }],
+      }],
+    },
+  }));
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    id: "voyage-input-only",
+    startedAt: "2026-08-09T19:00:00.000Z",
+    canonicalInput: {
+      contract: INPUT_CONTRACT,
+      complete: true,
+      fileName: INPUT_RELATIVE_PATH,
+      records: records.length,
+    },
+  })));
+  zip.addFile(
+    INPUT_RELATIVE_PATH,
+    Buffer.from(`${records.map(JSON.stringify).join("\n")}\n`),
+  );
+  zip.writeZip(path.join(voyageDirectory, fileName));
+
+  const app = fakeApp();
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const started = await invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      useSavedResults: false,
+      recapture: false,
+    });
+    assert.equal(started.statusCode, 200);
+    await waitFor(async () => {
+      const status = await invoke(routes, "GET", "/status");
+      return status.body.playback.state === "complete";
+    });
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.playback.mode, "canonical-input");
+    assert.equal(status.body.playback.recording, false);
+    assert.equal(status.body.playback.recordsReplayed, 2);
+    assert.equal(status.body.currentVoyage, null);
+    assert.equal(status.body.voyages.length, 1);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("recorded-result playback can be stopped without creating a voyage", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-stop-recorded-output-"));
   const voyageDirectory = path.join(root, "voyages");
@@ -459,6 +581,7 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
   const voyageId = "voyage-20260803T190853Z";
   const workingDirectory = path.join(voyageDirectory, voyageId);
   await fs.mkdir(path.join(workingDirectory, "input"), { recursive: true });
+  await fs.mkdir(path.join(workingDirectory, "recomputed"), { recursive: true });
   await fs.writeFile(
     path.join(workingDirectory, "index.json"),
     JSON.stringify({
@@ -474,6 +597,15 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
         bytes: 1,
         complete: false,
         sourcePrefixes: ["YDEN"],
+      },
+      recomputedOutput: {
+        contract: RECOMPUTED_OUTPUT_CONTRACT,
+        schemaVersion: 1,
+        fileName: RECOMPUTED_OUTPUT_RELATIVE_PATH,
+        origin: "live",
+        records: 0,
+        bytes: 0,
+        complete: false,
       },
       drTrack: {
         fileName: DR_TRACK_RELATIVE_PATH,
@@ -506,6 +638,23 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
   await fs.writeFile(
     path.join(workingDirectory, INPUT_RELATIVE_PATH),
     `${completeInput}${tornFragment}`,
+  );
+  const outputRecords = [0, 500].map((elapsedMs) => ({
+    contract: RECOMPUTED_OUTPUT_CONTRACT,
+    schemaVersion: 1,
+    elapsedMs,
+    capturedAt: new Date(Date.parse("2026-08-03T19:08:53.000Z") + elapsedMs).toISOString(),
+    delta: {
+      updates: [{
+        $source: "signalk-ajrm-marine-traffic",
+        values: [{ path: "plugins.ajrmMarineTraffic.voyageState", value: { moving: true } }],
+      }],
+    },
+  }));
+  const completeOutput = `${outputRecords.map((record) => JSON.stringify(record)).join("\n")}\n`;
+  await fs.writeFile(
+    path.join(workingDirectory, RECOMPUTED_OUTPUT_RELATIVE_PATH),
+    completeOutput,
   );
   const drSamples = [100, 500, 900].map((elapsedMs) => ({
     ts: new Date(Date.parse("2026-08-03T19:08:53.000Z") + elapsedMs).toISOString(),
@@ -541,6 +690,11 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
     assert.equal(index.canonicalInput.lastElapsedMs, 1000);
     assert.equal(index.canonicalInput.truncatedTrailingBytes, Buffer.byteLength(tornFragment));
     assert.equal(zip.readAsText(INPUT_RELATIVE_PATH), completeInput);
+    assert.equal(index.recomputedOutput.complete, true);
+    assert.equal(index.recomputedOutput.recoveredAfterRestart, true);
+    assert.equal(index.recomputedOutput.origin, "live");
+    assert.equal(index.recomputedOutput.records, 2);
+    assert.equal(zip.readAsText(RECOMPUTED_OUTPUT_RELATIVE_PATH), completeOutput);
     assert.equal(index.drTrack.samples, 3);
     assert.equal(index.drTrack.firstSampleAt, drSamples[0].ts);
     assert.equal(index.drTrack.lastSampleAt, drSamples[2].ts);

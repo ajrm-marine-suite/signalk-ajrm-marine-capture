@@ -146,6 +146,78 @@ test("recorded-result playback preserves values while refreshing transport times
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("timed playback pauses without consuming source time or invalidating timing", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-pausable-replay-"));
+  const file = path.join(root, "input.jsonl");
+  const records = [0, 100].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: 1 }],
+      }],
+    },
+  }));
+  await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
+  const emitted = [];
+  const replay = createReplayController({
+    filePath: file,
+    emitDelta(delta) {
+      emitted.push(delta);
+    },
+  });
+  const run = replay.run();
+  while (emitted.length === 0) await new Promise((resolve) => setTimeout(resolve, 2));
+  replay.pause();
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  assert.equal(emitted.length, 1);
+  assert.equal(replay.status().paused, true);
+  replay.resume();
+  const result = await run;
+  assert.equal(emitted.length, 2);
+  assert.equal(result.valid, true);
+  assert.equal(result.paused, false);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("timed playback can start from a requested source position", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-seek-replay-"));
+  const file = path.join(root, "input.jsonl");
+  const records = [0, 100, 200].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: elapsedMs }],
+      }],
+    },
+  }));
+  await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
+  let now = 1000;
+  const emitted = [];
+  const replay = createReplayController({
+    filePath: file,
+    startAtMs: 150,
+    monotonicNowMs: () => now,
+    wallClockIso: () => new Date(now).toISOString(),
+    wait(milliseconds) {
+      now += milliseconds;
+      return Promise.resolve();
+    },
+    emitDelta(delta) {
+      emitted.push(delta);
+    },
+  });
+  const result = await replay.run();
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].updates[0].values[0].value, 200);
+  assert.equal(result.recordsReplayed, 3);
+  assert.equal(result.sourceElapsedMs, 200);
+  assert.equal(result.valid, true);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("canonical input inspection rejects backwards elapsed time", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-canonical-input-"));
   const file = path.join(root, "input.jsonl");

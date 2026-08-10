@@ -34,33 +34,31 @@ test("Recorder command failures keep the error visible while clearing pending st
   assert.match(appSource, /finally \{\s*pendingRecorderAction = null;\s*renderRecorderButtons\(latestStatus \|\| \{\}\);/s);
 });
 
-test("UI distinguishes algorithmic voyage reprocessing from saved-result replay", () => {
-  assert.match(htmlSource, /id="startReplayCaptureButton"/);
-  assert.match(htmlSource, /id="playAsRecordedButton"/);
-  assert.match(htmlSource, /id="stopAsRecordedButton"/);
-  assert.match(htmlSource, /id="stopReplayCaptureButton"/);
-  assert.match(htmlSource, /id="interruptReplayCaptureButton"/);
-  assert.match(htmlSource, />Interrupt replay<\/button>/);
-  assert.match(htmlSource, /Reprocess voyage with current algorithms/);
-  assert.match(htmlSource, /runs the recorded sensor inputs through the currently installed/);
-  assert.match(htmlSource, /Replay saved voyage/);
-  assert.match(htmlSource, /without recalculating or recording it/);
-  assert.match(appSource, /"\/voyage\/replay\/start"/);
-  assert.match(appSource, /"\/voyage\/playback\/start"/);
+test("UI exposes one explicit player with saved-result and recapture modes", () => {
+  assert.match(htmlSource, /id="recordOutputsToggle"/);
+  assert.match(htmlSource, /Record calculated results as well as sensor inputs/);
+  assert.match(htmlSource, /id="useSavedResultsToggle"/);
+  assert.match(htmlSource, /id="recaptureToggle"/);
+  assert.match(htmlSource, /id="rewindPlaybackButton"/);
+  assert.match(htmlSource, /id="backPlaybackButton"/);
+  assert.match(htmlSource, /id="playPlaybackButton"/);
+  assert.match(htmlSource, /id="pausePlaybackButton"/);
+  assert.match(htmlSource, /id="stopPlaybackButton"/);
+  assert.match(htmlSource, /id="forwardPlaybackButton"/);
+  assert.match(htmlSource, /Use saved results/);
+  assert.match(htmlSource, /Save this run as a new recaptured voyage/);
+  assert.match(appSource, /"\/voyage\/player\/play"/);
+  assert.match(appSource, /"\/voyage\/player\/pause"/);
+  assert.match(appSource, /"\/voyage\/player\/resume"/);
+  assert.match(appSource, /"\/voyage\/player\/rewind"/);
+  assert.match(appSource, /"\/voyage\/player\/seek"/);
   assert.match(appSource, /"\/voyage\/playback\/stop"/);
-  assert.match(appSource, /"\/voyage\/replay\/stop"/);
-  assert.match(appSource, /"\/voyage\/replay\/abort"/);
-  assert.match(appSource, /selectedBundle\?\.canonicalInput\?\.contract === status\.canonicalInputContract/);
-  assert.match(
-    appSource,
-    /selectedBundle\?\.recomputedOutput\?\.contract === status\.recomputedOutputContract/,
-  );
+  assert.match(appSource, /selectedBundle\?\.hasInputs === true/);
+  assert.match(appSource, /selectedBundle\?\.hasSavedResults === true/);
+  assert.match(appSource, /elements\.recaptureToggle\.checked/);
+  assert.match(appSource, /elements\.useSavedResultsToggle\.checked = false/);
   assert.match(appSource, /playback\.state === "complete"/);
   assert.match(appSource, /playback\.valid === true/);
-  assert.match(
-    appSource,
-    /status\.currentVoyage && status\.currentVoyage\.recomputedReplay/,
-  );
   assert.match(appSource, /playback\.recordsReplayed/);
   assert.match(appSource, /Single monotonic stream/);
   assert.match(appSource, /Complete · Capture streams closed/);
@@ -69,12 +67,10 @@ test("UI distinguishes algorithmic voyage reprocessing from saved-result replay"
   assert.match(htmlSource, /id="replayFinaliseProgressBar"/);
   assert.match(appSource, /renderTaskProgress\(elements\.replayFinaliseProgressBar/);
   assert.match(appSource, /element\.removeAttribute\("value"\)/);
-  assert.match(appSource, /Replay complete; finalising/);
+  assert.match(appSource, /Recapture complete; finalising/);
   assert.match(appSource, /Complete · finalising recomputed result/);
-  assert.match(appSource, /finalisationRunning \|\| !recomputedActive/);
-  assert.match(htmlSource, /browser may be closed/);
-  assert.match(appSource, /not a current canonical voyage/);
-  assert.match(appSource, /window\.confirm/);
+  assert.match(htmlSource, /stopping early preserves an explicitly partial result/);
+  assert.match(appSource, /Inputs only/);
 });
 
 test("Voyage downloads stream through the browser without buffering the ZIP in memory", () => {

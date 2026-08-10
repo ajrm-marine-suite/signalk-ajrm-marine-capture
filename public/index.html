@@ -42,6 +42,10 @@
             <button id="startButton" type="button">Start now</button>
             <button id="stopButton" type="button" class="secondary">Stop now</button>
           </div>
+          <label class="toggle-field">
+            <input id="recordOutputsToggle" type="checkbox">
+            <span>Record calculated results as well as sensor inputs</span>
+          </label>
           <label class="comment-field">
             <span>Voyage comment</span>
             <textarea id="commentInput" rows="4" placeholder="Describe this voyage in plain English: route, weather, odd behaviour, testing notes..."></textarea>
@@ -50,10 +54,20 @@
             <button id="saveCommentButton" type="button" class="secondary">Save comment</button>
           </div>
           <div class="replay-capture">
-            <h3>Voyage replay and reprocessing</h3>
-            <p id="replayCaptureInfo">Select a canonical voyage bundle below.</p>
+            <h3>Voyage player</h3>
+            <p id="replayCaptureInfo">Select a voyage bundle below.</p>
+            <div class="player-options">
+              <label class="toggle-field">
+                <input id="useSavedResultsToggle" type="checkbox">
+                <span>Use saved results</span>
+              </label>
+              <label class="toggle-field">
+                <input id="recaptureToggle" type="checkbox">
+                <span>Save this run as a new recaptured voyage</span>
+              </label>
+            </div>
             <dl class="replay-status" aria-live="polite">
-              <div><dt>Capture replay</dt><dd id="replayPlaybackState">Idle</dd></div>
+              <div><dt>Player</dt><dd id="replayPlaybackState">Idle</dd></div>
               <div>
                 <dt>Replay progress</dt>
                 <dd>
@@ -70,14 +84,15 @@
                 </dd>
               </div>
             </dl>
-            <div class="actions">
-              <button id="startReplayCaptureButton" type="button">Reprocess voyage with current algorithms</button>
-              <button id="playAsRecordedButton" type="button" class="secondary">Replay saved voyage</button>
-              <button id="stopAsRecordedButton" type="button" class="secondary">Stop playback</button>
-              <button id="stopReplayCaptureButton" type="button" class="secondary">Finalise now</button>
-              <button id="interruptReplayCaptureButton" type="button" class="delete-button">Interrupt replay</button>
+            <div class="actions player-controls" role="group" aria-label="Voyage playback controls">
+              <button id="rewindPlaybackButton" type="button" class="secondary" title="Return to the beginning" aria-label="Return to beginning">⏮</button>
+              <button id="backPlaybackButton" type="button" class="secondary" title="Go back 30 seconds" aria-label="Go back 30 seconds">⏪</button>
+              <button id="playPlaybackButton" type="button" title="Play" aria-label="Play">▶</button>
+              <button id="pausePlaybackButton" type="button" class="secondary" title="Pause" aria-label="Pause">⏸</button>
+              <button id="stopPlaybackButton" type="button" class="secondary" title="Stop" aria-label="Stop">⏹</button>
+              <button id="forwardPlaybackButton" type="button" class="secondary" title="Go forward 30 seconds" aria-label="Go forward 30 seconds">⏩</button>
             </div>
-            <p class="field-note"><strong>Reprocess voyage with current algorithms</strong> runs the recorded sensor inputs through the currently installed AJRM Marine software and saves a new calculated voyage result. <strong>Replay saved voyage</strong> plays an already saved result without recalculating or recording it. Stop playback ends that read-only replay. Both operations run server-side, so the browser may be closed. Reprocessing automatically stops and builds its ZIP at verified input EOF. Finalise now remains as a fallback after verified EOF; Interrupt replay preserves a partial result in an explicitly incomplete, unverified ZIP. A voyage without current sensor input or a completed saved result cannot use the corresponding action.</p>
+            <p class="field-note">Every voyage with sensor inputs can be played through the currently installed algorithms. If saved results are available, select <strong>Use saved results</strong> to replay the stored result stream. Select <strong>Save this run as a new recaptured voyage</strong> to ignore old results, run the original inputs through the current software, and save a new comparison bundle. Recapture completes and builds its ZIP automatically at verified input EOF; stopping early preserves an explicitly partial result.</p>
           </div>
         </article>
 

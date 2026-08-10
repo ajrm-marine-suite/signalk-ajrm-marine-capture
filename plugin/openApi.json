@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AJRM Marine Voyages",
-    "version": "0.9.8",
+    "version": "0.10.0",
     "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {
@@ -48,7 +48,7 @@
       "get": { "summary": "List Signal K chart resources used by voyage review", "responses": { "200": { "description": "Chart resources" } } }
     },
     "/settings": {
-      "post": { "summary": "Enable or disable automatic recording", "responses": { "200": { "description": "Setting saved" } } }
+      "post": { "summary": "Update persistent automatic-recording and calculated-result recording settings", "responses": { "200": { "description": "Settings saved" } } }
     },
     "/voyage/start": {
       "post": { "summary": "Start an ordinary canonical voyage", "responses": { "200": { "description": "Voyage started" }, "400": { "description": "Start rejected" } } }
@@ -70,7 +70,22 @@
       "post": { "summary": "Play a completed recorded result without recording a new voyage", "responses": { "200": { "description": "Playback started" }, "400": { "description": "Playback rejected" } } }
     },
     "/voyage/playback/stop": {
-      "post": { "summary": "Stop recorded-result playback", "responses": { "200": { "description": "Playback stopped" }, "400": { "description": "Stop rejected" } } }
+      "post": { "summary": "Stop standalone playback or preserve a partial recapture", "responses": { "200": { "description": "Playback stopped" }, "400": { "description": "Stop rejected" } } }
+    },
+    "/voyage/player/play": {
+      "post": { "summary": "Play saved results, calculate fresh results, or start a recaptured child voyage", "responses": { "200": { "description": "Player started" }, "400": { "description": "Play rejected" } } }
+    },
+    "/voyage/player/pause": {
+      "post": { "summary": "Pause the active voyage player without advancing source time", "responses": { "200": { "description": "Player paused" }, "400": { "description": "Pause rejected" } } }
+    },
+    "/voyage/player/resume": {
+      "post": { "summary": "Resume paused voyage playback", "responses": { "200": { "description": "Player resumed" }, "400": { "description": "Resume rejected" } } }
+    },
+    "/voyage/player/rewind": {
+      "post": { "summary": "Return a non-recording playback to the beginning", "responses": { "200": { "description": "Player returned to beginning" }, "400": { "description": "Rewind rejected" } } }
+    },
+    "/voyage/player/seek": {
+      "post": { "summary": "Move non-recording playback to an elapsed source time", "responses": { "200": { "description": "Player moved" }, "400": { "description": "Seek rejected" } } }
     },
     "/voyage/replay/stop": {
       "post": { "summary": "Finalise a replay after verified canonical EOF", "responses": { "200": { "description": "Recomputed ZIP completed" }, "400": { "description": "Finalisation rejected" } } }

@@ -8,6 +8,7 @@ const elements = {
   banner: document.getElementById("banner"),
   refreshButton: document.getElementById("refreshButton"),
   enabledToggle: document.getElementById("enabledToggle"),
+  recordOutputsToggle: document.getElementById("recordOutputsToggle"),
   stateValue: document.getElementById("stateValue"),
   voyageValue: document.getElementById("voyageValue"),
   speedValue: document.getElementById("speedValue"),
@@ -26,11 +27,14 @@ const elements = {
   selectedBundleInfo: document.getElementById("selectedBundleInfo"),
   startButton: document.getElementById("startButton"),
   stopButton: document.getElementById("stopButton"),
-  startReplayCaptureButton: document.getElementById("startReplayCaptureButton"),
-  playAsRecordedButton: document.getElementById("playAsRecordedButton"),
-  stopAsRecordedButton: document.getElementById("stopAsRecordedButton"),
-  stopReplayCaptureButton: document.getElementById("stopReplayCaptureButton"),
-  interruptReplayCaptureButton: document.getElementById("interruptReplayCaptureButton"),
+  useSavedResultsToggle: document.getElementById("useSavedResultsToggle"),
+  recaptureToggle: document.getElementById("recaptureToggle"),
+  rewindPlaybackButton: document.getElementById("rewindPlaybackButton"),
+  backPlaybackButton: document.getElementById("backPlaybackButton"),
+  playPlaybackButton: document.getElementById("playPlaybackButton"),
+  pausePlaybackButton: document.getElementById("pausePlaybackButton"),
+  stopPlaybackButton: document.getElementById("stopPlaybackButton"),
+  forwardPlaybackButton: document.getElementById("forwardPlaybackButton"),
   replayCaptureInfo: document.getElementById("replayCaptureInfo"),
   replayPlaybackState: document.getElementById("replayPlaybackState"),
   replayProgressValue: document.getElementById("replayProgressValue"),
@@ -52,39 +56,44 @@ elements.refreshButton.addEventListener("click", refresh);
 elements.enabledToggle.addEventListener("change", () =>
   command("/settings", { enabled: elements.enabledToggle.checked }),
 );
+elements.recordOutputsToggle.addEventListener("change", () =>
+  command("/settings", { recordOutputs: elements.recordOutputsToggle.checked }),
+);
 elements.startButton.addEventListener("click", () => recorderCommand("start", "/voyage/start", {
   manual: true,
   comment: elements.commentInput.value,
 }));
 elements.stopButton.addEventListener("click", () => recorderCommand("stop", "/voyage/stop", { manual: true }));
-elements.startReplayCaptureButton.addEventListener("click", () =>
-  replayRecorderCommand("start", "/voyage/replay/start", {
-    file: selectedBundle && selectedBundle.fileName,
-    comment: elements.commentInput.value,
-  }),
-);
-elements.playAsRecordedButton.addEventListener("click", () =>
-  replayRecorderCommand("play", "/voyage/playback/start", {
-    file: selectedBundle && selectedBundle.fileName,
-  }),
-);
-elements.stopAsRecordedButton.addEventListener("click", () =>
-  replayRecorderCommand("stop-playback", "/voyage/playback/stop", {}),
-);
-elements.stopReplayCaptureButton.addEventListener("click", () =>
-  replayRecorderCommand("stop", "/voyage/replay/stop", {}),
-);
-elements.interruptReplayCaptureButton.addEventListener("click", () => {
-  const parentVoyage = latestStatus?.currentVoyage?.recomputedReplay?.parentVoyage ||
-    "the loaded parent voyage";
-  if (!window.confirm(
-    `Interrupt the recomputed replay of ${parentVoyage}? Partial output will be preserved in an incomplete, unverified ZIP.`,
-  )) {
+elements.playPlaybackButton.addEventListener("click", () => {
+  if (latestStatus?.playback?.paused === true) {
+    replayRecorderCommand("resume", "/voyage/player/resume", {});
     return;
   }
-  replayRecorderCommand("abort", "/voyage/replay/abort", {
-    reason: "user interrupted recomputed replay",
+  replayRecorderCommand("play", "/voyage/player/play", {
+    file: selectedBundle && selectedBundle.fileName,
+    useSavedResults: elements.useSavedResultsToggle.checked,
+    recapture: elements.recaptureToggle.checked,
+    comment: elements.commentInput.value,
   });
+});
+elements.pausePlaybackButton.addEventListener("click", () =>
+  replayRecorderCommand("pause", "/voyage/player/pause", {}),
+);
+elements.stopPlaybackButton.addEventListener("click", () =>
+  replayRecorderCommand("stop", "/voyage/playback/stop", {}),
+);
+elements.rewindPlaybackButton.addEventListener("click", () =>
+  replayRecorderCommand("rewind", "/voyage/player/rewind", {}),
+);
+elements.backPlaybackButton.addEventListener("click", () =>
+  seekPlayback(-30_000),
+);
+elements.forwardPlaybackButton.addEventListener("click", () =>
+  seekPlayback(30_000),
+);
+elements.recaptureToggle.addEventListener("change", () => {
+  if (elements.recaptureToggle.checked) elements.useSavedResultsToggle.checked = false;
+  if (latestStatus) renderReplayRecorder(latestStatus);
 });
 elements.saveCommentButton.addEventListener("click", () =>
   command("/voyage/comment", { comment: elements.commentInput.value }),
@@ -161,6 +170,8 @@ function render(status) {
     ? "Automatic voyage recording is enabled."
     : "Automatic voyage recording is disabled.";
   elements.enabledToggle.checked = status.enabled === true;
+  elements.recordOutputsToggle.checked = status.recordOutputs === true;
+  elements.recordOutputsToggle.disabled = Boolean(status.currentVoyage);
   elements.stateValue.textContent = status.state || "-";
   elements.voyageValue.textContent = status.currentVoyage
     ? `${status.currentVoyage.id} since ${formatTime(status.currentVoyage.startedAt)}`
@@ -176,9 +187,11 @@ function render(status) {
     : "-";
   elements.modeValue.textContent = titleCase(status.captureMode || "voyage");
   elements.captureValue.textContent = status.currentVoyage?.recomputedReplay
-    ? "recording recomputed output"
+    ? "recapturing inputs + fresh results"
     : status.currentVoyage
-      ? "recording canonical physical sensor input"
+      ? status.currentVoyage.recomputedOutput
+        ? "recording sensor inputs + calculated results"
+        : "recording sensor inputs"
       : "idle";
   elements.snapshotValue.textContent = status.currentVoyage
     ? `${status.currentVoyage.snapshotCount || 0}`
@@ -228,81 +241,80 @@ async function replayRecorderCommand(action, path, body) {
   }
 }
 
+function seekPlayback(offsetMs) {
+  const current = Number(latestStatus?.playback?.sourceElapsedMs) || 0;
+  const duration = Number(latestStatus?.playback?.sourceDurationMs) || 0;
+  const positionMs = Math.max(0, Math.min(duration, current + offsetMs));
+  replayRecorderCommand("seek", "/voyage/player/seek", { positionMs });
+}
+
 function renderReplayRecorder(status) {
   const playback = status.playback || {};
   const currentVoyage = status.currentVoyage || null;
-  const recomputedActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
-  const standaloneActive = playback.mode === "recorded-output";
+  const recaptureActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
   const playbackActive = playback.active === true;
-  const selectedReady =
+  const playbackPaused = playback.paused === true;
+  const selectedReady = selectedBundle?.hasInputs === true ||
     selectedBundle?.canonicalInput?.contract === status.canonicalInputContract;
-  const selectedRecordedResult =
-    selectedBundle?.recomputedOutput?.contract === status.recomputedOutputContract &&
-    selectedBundle.recomputedOutput.complete === true;
+  const selectedRecordedResult = selectedBundle?.hasSavedResults === true ||
+    (selectedBundle?.recomputedOutput?.contract === status.recomputedOutputContract &&
+      selectedBundle.recomputedOutput.complete === true &&
+      Number(selectedBundle.recomputedOutput.records) > 0);
   const replayFinished =
     playback.state === "complete" &&
     playback.complete === true &&
     playback.valid === true;
   const finalisationRunning = status.finalisation?.state === "running";
-  const busy = pendingReplayAction === "start" ||
+  const busy = pendingReplayAction === "play" ||
+    pendingReplayAction === "pause" ||
+    pendingReplayAction === "resume" ||
     pendingReplayAction === "stop" ||
-    pendingReplayAction === "abort" ||
-    pendingReplayAction === "play" ||
-    pendingReplayAction === "stop-playback";
-  elements.startReplayCaptureButton.disabled =
-    busy || finalisationRunning || Boolean(currentVoyage) || playbackActive || !selectedReady;
-  elements.playAsRecordedButton.disabled =
-    busy || finalisationRunning || Boolean(currentVoyage) || playbackActive || !selectedRecordedResult;
-  elements.stopAsRecordedButton.disabled =
-    busy || !standaloneActive || !playbackActive;
-  elements.stopReplayCaptureButton.disabled =
-    busy || finalisationRunning || !recomputedActive || !replayFinished;
-  elements.interruptReplayCaptureButton.disabled =
-    busy || finalisationRunning || !recomputedActive;
-  elements.startReplayCaptureButton.textContent =
-    pendingReplayAction === "start"
-      ? "Starting reprocessing..."
-      : "Reprocess voyage with current algorithms";
-  elements.playAsRecordedButton.textContent =
-    pendingReplayAction === "play" ? "Starting replay..." : "Replay saved voyage";
-  elements.stopAsRecordedButton.textContent =
-    pendingReplayAction === "stop-playback" ? "Stopping..." : "Stop playback";
-  elements.stopReplayCaptureButton.textContent =
-    pendingReplayAction === "stop"
-      ? finalisationRunning
-        ? "Finalising..."
-        : "Starting finalisation..."
-      : "Finalise now";
-  elements.interruptReplayCaptureButton.textContent =
-    pendingReplayAction === "abort" ? "Interrupting..." : "Interrupt replay";
-  renderReplayProgress(status, playback, recomputedActive, replayFinished);
+    pendingReplayAction === "rewind" ||
+    pendingReplayAction === "seek";
+  if (!selectedRecordedResult) elements.useSavedResultsToggle.checked = false;
+  if (elements.recaptureToggle.checked) elements.useSavedResultsToggle.checked = false;
+  elements.useSavedResultsToggle.disabled =
+    busy || playbackActive || finalisationRunning || !selectedRecordedResult ||
+    elements.recaptureToggle.checked;
+  elements.recaptureToggle.disabled =
+    busy || playbackActive || finalisationRunning || !selectedReady;
+  elements.playPlaybackButton.disabled = busy || finalisationRunning ||
+    (playbackActive ? !playbackPaused : !selectedReady && !selectedRecordedResult) ||
+    Boolean(currentVoyage && !recaptureActive);
+  elements.pausePlaybackButton.disabled = busy || !playbackActive || playbackPaused;
+  elements.stopPlaybackButton.disabled = busy || (!playbackActive && !recaptureActive);
+  elements.rewindPlaybackButton.disabled = busy || finalisationRunning || recaptureActive ||
+    (!playbackActive && playback.state === "idle");
+  elements.backPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
+  elements.forwardPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
+  renderReplayProgress(status, playback, recaptureActive, replayFinished);
   if (finalisationRunning) {
     elements.replayCaptureInfo.textContent =
-      `Replay complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the recomputed voyage"}.`;
-  } else if (standaloneActive && playbackActive) {
+      `Recapture complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the new voyage"}.`;
+  } else if (playbackActive) {
     elements.replayCaptureInfo.textContent =
-      `Playing the stored result from ${playback.fileName || "the selected voyage"} at fixed 1x. Capture is not recording.`;
-  } else if (standaloneActive && playback.state === "complete") {
+      `${playbackPaused ? "Paused" : "Playing"} ${playback.fileName || "the selected voyage"} using ${playback.mode === "recorded-output" ? "saved results" : "fresh calculations"}${recaptureActive ? " and saving a new recaptured voyage" : " without recording"}.`;
+  } else if (playback.state === "complete") {
     elements.replayCaptureInfo.textContent =
-      `Finished playing ${playback.fileName || "the recorded voyage result"}; no new voyage was created.`;
-  } else if (recomputedActive) {
+      `Finished playing ${playback.fileName || "the voyage"}${playback.recapture ? "; the recaptured voyage is being finalised" : "; no new voyage was created"}.`;
+  } else if (recaptureActive) {
     elements.replayCaptureInfo.textContent =
-      `Capture is replaying ${currentVoyage.recomputedReplay.parentVoyage || "the parent voyage"} at fixed 1x and recording recomputed output.`;
+      `Recapturing ${currentVoyage.recomputedReplay.parentVoyage || "the parent voyage"} with current algorithms.`;
   } else if (selectedRecordedResult && selectedReady) {
     elements.replayCaptureInfo.textContent =
-      `${selectedBundle.fileName} can be replayed from its saved result or reprocessed using the current algorithms.`;
+      `${selectedBundle.fileName}: ${selectedBundle.contentsLabel || "Inputs + saved results"} · ${selectedBundle.integrityLabel || "Complete"}. Choose saved results or fresh calculation.`;
   } else if (selectedRecordedResult) {
     elements.replayCaptureInfo.textContent =
-      `Ready to replay the saved result from ${selectedBundle.fileName} without recalculating or recording.`;
+      `${selectedBundle.fileName}: saved results only. Saved-result playback is available, but it cannot be recaptured without inputs.`;
   } else if (selectedReady) {
     elements.replayCaptureInfo.textContent =
-      `Ready to reprocess ${selectedBundle.fileName} with the current algorithms.`;
+      `${selectedBundle.fileName}: Inputs only · ${selectedBundle.integrityLabel || "Complete"}. Current algorithms will calculate fresh outputs.`;
   } else if (selectedBundle) {
     elements.replayCaptureInfo.textContent =
-      `${selectedBundle.fileName} is not a current canonical voyage and cannot be replayed.`;
+      `${selectedBundle.fileName} has no playable current voyage stream.`;
   } else {
     elements.replayCaptureInfo.textContent =
-      "Select a canonical voyage bundle below, then start its fixed 1x replay.";
+      "Select a voyage bundle below.";
   }
 }
 
@@ -390,8 +402,8 @@ function renderReplayProgress(status, playback, recomputedActive, replayFinished
     elements.replayFinaliseValue.textContent =
       standalonePlayback
         ? "Not applicable · playback is not being recorded."
-        : !recomputedActive
-          ? "Select a voyage with recorded sensor input to reprocess."
+      : !recomputedActive
+          ? "Not recording · enable recapture to save fresh results."
           : playback.state === "failed"
             ? `FAILED: ${playback.error || "Replay timing invalid"}. Interrupt to preserve partial evidence.`
             : playback.active
@@ -429,8 +441,10 @@ function titleCase(value) {
 }
 
 function renderVoyageBundles(voyages) {
-  if (selectedBundle && !voyages.some((voyage) => voyage.fileName === selectedBundle.fileName)) {
-    selectedBundle = null;
+  if (selectedBundle) {
+    selectedBundle = voyages.find(
+      (voyage) => voyage.fileName === selectedBundle.fileName,
+    ) || null;
   }
   updateSelectedBundleActions();
   if (!voyages.length) {
@@ -443,6 +457,7 @@ function renderVoyageBundles(voyages) {
         <div class="bundle-details">
           <strong>${escapeHtml(voyage.fileName)}</strong>
           <span>${escapeHtml(formatTime(voyage.modifiedAt))} · ${escapeHtml(formatBytes(voyage.bytes))}</span>
+          <p class="bundle-comment"><span>Contents:</span> ${escapeHtml(voyage.contentsLabel || "Unknown")} · ${escapeHtml(voyage.integrityLabel || "Unknown")}${voyage.resultOrigin ? ` · ${escapeHtml(titleCase(voyage.resultOrigin))} results` : ""}</p>
           ${voyage.comment ? `<p class="bundle-comment"><span>Comment:</span> ${escapeHtml(voyage.comment)}</p>` : ""}
           ${voyage.recomputedReplay ? `<p class="bundle-comment"><span>Recomputed replay:</span> parent ${escapeHtml(voyage.recomputedReplay.parentVoyage || "unknown")}${voyage.recomputedReplay.incomplete === true ? " · INCOMPLETE / UNVERIFIED" : ""}</p>` : ""}
         </div>
@@ -453,6 +468,8 @@ function renderVoyageBundles(voyages) {
     button.addEventListener("click", () => {
       const voyage = voyages.find((item) => item.fileName === button.dataset.bundle);
       selectedBundle = voyage || null;
+      elements.recaptureToggle.checked = false;
+      elements.useSavedResultsToggle.checked = selectedBundle?.hasSavedResults === true;
       renderVoyageBundles(voyages);
       if (latestStatus) renderReplayRecorder(latestStatus);
     });

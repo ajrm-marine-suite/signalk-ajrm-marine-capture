@@ -263,6 +263,34 @@ li {
   gap: 6px;
 }
 
+.toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  color: #dbeaff;
+}
+
+.toggle-field input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.player-options {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border: 1px solid #20354f;
+  border-radius: 10px;
+  background: #071827;
+}
+
+.player-controls button {
+  min-width: 58px;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
 .selected-bundle-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 160px));

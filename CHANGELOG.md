@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- Add the persistent **Record calculated results as well as sensor inputs**
+  option for ordinary live voyages, with restart recovery for both streams.
+- Replace separate replay/reprocess actions with one video-style voyage player:
+  return to start, 30-second back/forward, play, pause and stop.
+- Identify every listed voyage by playable contents and independent integrity
+  state, including inputs-only and older saved-results-only bundles.
+- Let complete result-bearing voyages use their saved results or ignore them and
+  calculate fresh results from canonical inputs.
+- Add explicit recapture mode. It always uses the original inputs with current
+  algorithms, saves a new child result, copies the exact canonical input into
+  that child, records parent lineage, and leaves the original untouched.
+- Exclude paused time from effective replay-rate validation and prevent seeking
+  during recapture so one saved output timeline cannot run backwards.
+- Preserve an early stop as a partial, unverified recapture and automatically
+  finalise a complete recapture at verified input EOF.
+
 ## 0.9.8
 
 - Rename the two voyage operations to distinguish them by outcome:

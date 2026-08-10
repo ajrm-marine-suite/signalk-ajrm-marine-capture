@@ -193,6 +193,7 @@ function createReplayController({
   wallClockIso = () => new Date().toISOString(),
   wait = defaultWait,
   onStatus = () => {},
+  startAtMs = 0,
 }) {
   return createTimedReplayController({
     filePath,
@@ -203,6 +204,7 @@ function createReplayController({
     wallClockIso,
     wait,
     onStatus,
+    startAtMs,
     inputContract: INPUT_CONTRACT,
     replayContract: REPLAY_CONTRACT,
     inspect: inspectCanonicalInput,
@@ -233,6 +235,7 @@ function createTimedReplayController({
   replayContract,
   inspect,
   refreshDelta,
+  startAtMs = 0,
 }) {
   if (typeof emitDelta !== "function") {
     throw new Error("Replay controller requires emitDelta");
@@ -240,11 +243,17 @@ function createTimedReplayController({
   let cancelled = false;
   let cancelReason = null;
   let activeWait = null;
+  let paused = false;
+  let pauseStartedMs = null;
+  let totalPausedMs = 0;
+  let resumeWait = null;
   const status = {
     contract: replayContract,
     inputContract,
     state: "preparing",
     active: false,
+    playing: false,
+    paused: false,
     complete: false,
     valid: null,
     requestedRate: 1,
@@ -282,26 +291,42 @@ function createTimedReplayController({
 
       const startedPacingMs = monotonicNowMs();
       const startedAt = wallClockIso();
+      const requestedStartMs = Math.min(
+        input.durationMs,
+        Math.max(0, Number(startAtMs) || 0),
+      );
       let previousElapsedMs = null;
       publish({
         state: "replaying",
         active: true,
+        playing: true,
+        paused: false,
         startedAt,
+        sourceElapsedMs: requestedStartMs,
       });
 
       await forEachJsonLine(filePath, async (record, lineNumber) => {
         if (cancelled) throw cancelledError(cancelReason);
+        await waitWhilePaused();
         validateReplayRecord(record, lineNumber, previousElapsedMs, inputContract);
         previousElapsedMs = Number(record.elapsedMs);
         const sourceElapsedMs =
           Number(record.elapsedMs) - Number(input.firstElapsedMs);
-        const deadlineMs = startedPacingMs + sourceElapsedMs;
+        if (sourceElapsedMs < requestedStartMs) {
+          status.recordsReplayed += 1;
+          return;
+        }
+        let deadlineMs =
+          startedPacingMs + totalPausedMs + sourceElapsedMs - requestedStartMs;
         let lagMs = monotonicNowMs() - deadlineMs;
-        if (lagMs < 0) {
+        while (lagMs < 0) {
           activeWait = wait(-lagMs);
           await activeWait;
           activeWait = null;
           if (cancelled) throw cancelledError(cancelReason);
+          await waitWhilePaused();
+          deadlineMs =
+            startedPacingMs + totalPausedMs + sourceElapsedMs - requestedStartMs;
           lagMs = monotonicNowMs() - deadlineMs;
         }
         status.maximumObservedLagMs = Math.max(
@@ -315,9 +340,11 @@ function createTimedReplayController({
         }
         const emittedAt = wallClockIso();
         await emitDelta(refreshDelta(record, emittedAt), record);
-        const wallElapsedMs = Math.max(0, monotonicNowMs() - startedPacingMs);
+        const wallElapsedMs = activeWallElapsedMs(startedPacingMs);
         const effectiveRate =
-          wallElapsedMs > 0 ? sourceElapsedMs / wallElapsedMs : 1;
+          wallElapsedMs > 0
+            ? Math.max(0, sourceElapsedMs - requestedStartMs) / wallElapsedMs
+            : 1;
         publish({
           recordsReplayed: status.recordsReplayed + 1,
           sourceElapsedMs,
@@ -329,13 +356,20 @@ function createTimedReplayController({
       });
 
       const completedPacingMs = monotonicNowMs();
-      const wallElapsedMs = Math.max(0, completedPacingMs - startedPacingMs);
+      const wallElapsedMs = Math.max(
+        0,
+        completedPacingMs - startedPacingMs - totalPausedMs,
+      );
       const effectiveRate =
-        wallElapsedMs > 0 ? input.durationMs / wallElapsedMs : 1;
+        wallElapsedMs > 0
+          ? Math.max(0, input.durationMs - requestedStartMs) / wallElapsedMs
+          : 1;
       const valid = effectiveRate >= minimumEffectiveRatio;
       publish({
         state: valid ? "complete" : "failed",
         active: false,
+        playing: false,
+        paused: false,
         complete: true,
         valid,
         wallElapsedMs: Math.round(wallElapsedMs),
@@ -353,6 +387,8 @@ function createTimedReplayController({
       publish({
         state: wasCancelled ? "aborted" : "failed",
         active: false,
+        playing: false,
+        paused: false,
         complete: false,
         valid: false,
         completedAt: wallClockIso(),
@@ -369,11 +405,55 @@ function createTimedReplayController({
     if (activeWait && typeof activeWait.cancel === "function") {
       activeWait.cancel();
     }
+    resumeWait?.();
+    resumeWait = null;
+  }
+
+  function pause() {
+    if (cancelled || !status.active || paused) return { ...status };
+    paused = true;
+    pauseStartedMs = monotonicNowMs();
+    if (activeWait && typeof activeWait.cancel === "function") activeWait.cancel();
+    publish({ state: "paused", paused: true, playing: false });
+    return { ...status };
+  }
+
+  function resume() {
+    if (cancelled || !status.active || !paused) return { ...status };
+    const now = monotonicNowMs();
+    totalPausedMs += Math.max(0, now - pauseStartedMs);
+    pauseStartedMs = null;
+    paused = false;
+    publish({ state: "replaying", paused: false, playing: true });
+    resumeWait?.();
+    resumeWait = null;
+    return { ...status };
+  }
+
+  async function waitWhilePaused() {
+    while (paused && !cancelled) {
+      await new Promise((resolve) => {
+        resumeWait = resolve;
+      });
+    }
+    if (cancelled) throw cancelledError(cancelReason);
+  }
+
+  function activeWallElapsedMs(startedPacingMs) {
+    const currentPauseMs = paused && pauseStartedMs !== null
+      ? Math.max(0, monotonicNowMs() - pauseStartedMs)
+      : 0;
+    return Math.max(
+      0,
+      monotonicNowMs() - startedPacingMs - totalPausedMs - currentPauseMs,
+    );
   }
 
   return {
     run,
     cancel,
+    pause,
+    resume,
     status() {
       return { ...status };
     },
