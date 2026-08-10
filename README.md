@@ -7,7 +7,7 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.10.3` provides one voyage player for saved-result playback,
+Version `0.10.4` provides one voyage player for saved-result playback,
 fresh calculation from recorded inputs, and lineage-preserving recapture.
 
 ## The simple data model
@@ -58,7 +58,9 @@ results, saved results only, or no playable stream) and **Integrity**
 Every voyage with complete canonical inputs can be played. The player offers
 return-to-start, 30-second back/forward, play, pause, and stop controls.
 Stopping leaves the voyage selected and loaded, ready to return to the start
-or play again.
+or play again. While that voyage remains loaded, Capture reuses its prepared
+temporary stream and validation result, making rewind and ±30-second seeks
+responsive without another complete ZIP extraction and validation pass.
 Pausing excludes the paused interval from effective-rate validation. Both
 playback modes run on the Signal K server and continue if the browser closes.
 
@@ -199,7 +201,7 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.3 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.4 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

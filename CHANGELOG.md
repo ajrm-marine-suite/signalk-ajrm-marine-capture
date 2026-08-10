@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4
+
+- Reuse the extracted voyage stream and its completed validation metadata while
+  a voyage remains loaded, instead of extracting and validating the whole ZIP
+  again for every rewind or ±30-second seek.
+- Remove the prepared temporary stream when another voyage or recording is
+  loaded, or when Capture stops.
+
 ## 0.10.3
 
 - Show `Preparing…` immediately after Play instead of leaving the player at

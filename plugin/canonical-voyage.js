@@ -195,6 +195,8 @@ function createReplayController({
   wait = defaultWait,
   onStatus = () => {},
   startAtMs = 0,
+  preparedInput = null,
+  onPrepared = () => {},
 }) {
   return createTimedReplayController({
     filePath,
@@ -206,6 +208,8 @@ function createReplayController({
     wait,
     onStatus,
     startAtMs,
+    preparedInput,
+    onPrepared,
     inputContract: INPUT_CONTRACT,
     replayContract: REPLAY_CONTRACT,
     inspect: inspectCanonicalInput,
@@ -237,6 +241,8 @@ function createTimedReplayController({
   inspect,
   refreshDelta,
   startAtMs = 0,
+  preparedInput = null,
+  onPrepared = () => {},
 }) {
   if (typeof emitDelta !== "function") {
     throw new Error("Replay controller requires emitDelta");
@@ -282,7 +288,8 @@ function createTimedReplayController({
 
   async function run() {
     try {
-      const input = await inspect(filePath);
+      const input = preparedInput || await inspect(filePath);
+      onPrepared({ ...input });
       publish({
         state: "ready",
         recordsTotal: input.records,

@@ -286,6 +286,7 @@ module.exports = function ajrmMarineCapture(app) {
     } catch (error) {
       logError("preserve active voyage during plugin stop failed", error);
     }
+    await cleanupStandalonePlayback({ clearSpec: true });
     if (globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY]?.pluginId === plugin.id) {
       delete globalThis[AJRM_MARINE_CAPTURE_API_REGISTRY];
     }
@@ -1083,6 +1084,7 @@ module.exports = function ajrmMarineCapture(app) {
     };
     const replayComment = normalizeComment(comment) ||
       `Recomputed replay of ${parentVoyage}`;
+    await cleanupStandalonePlayback({ clearSpec: true });
     return startVoyage("recomputed replay", {
       comment: replayComment,
       recomputedReplay,
@@ -1114,11 +1116,22 @@ module.exports = function ajrmMarineCapture(app) {
         "This voyage has no completed saved result. Reprocess the voyage with current algorithms first.",
       );
     }
+    const reusablePreparedStream = await canReuseStandalonePlayback(
+      fileName,
+      "recorded-output",
+    );
+    const preparedInput = reusablePreparedStream
+      ? standalonePlaybackSpec?.preparedInput || null
+      : null;
+    if (!reusablePreparedStream) {
+      await cleanupStandalonePlayback({ clearSpec: true });
+    }
     standalonePlaybackSpec = {
       file: fileName,
       mode: "recorded-output",
       useSavedResults: true,
       startAtMs: Math.max(0, Number(startAtMs) || 0),
+      preparedInput,
     };
     finalisation = null;
     const originalFrom =
@@ -1137,6 +1150,7 @@ module.exports = function ajrmMarineCapture(app) {
         fileName,
         inputContract: RECOMPUTED_OUTPUT_CONTRACT,
         replayContract: RECORDED_OUTPUT_PLAYBACK_CONTRACT,
+        preparedStreamReused: reusablePreparedStream,
         replayOriginalAt: Number.isFinite(originalFromMs)
           ? new Date(originalFromMs + Number(status.sourceElapsedMs || 0)).toISOString()
           : null,
@@ -1150,17 +1164,19 @@ module.exports = function ajrmMarineCapture(app) {
     publishState();
     try {
       await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
-      const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
-      await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
-      standalonePlaybackPath = path.join(
-        replayWorkDirectory,
-        `recorded-output-${randomUUID()}.jsonl`,
-      );
-      await extractRecomputedOutputFromZip(
-        voyagePath,
-        standalonePlaybackPath,
-        index.recomputedOutput.fileName,
-      );
+      if (!reusablePreparedStream) {
+        const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
+        await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
+        standalonePlaybackPath = path.join(
+          replayWorkDirectory,
+          `recorded-output-${randomUUID()}.jsonl`,
+        );
+        await extractRecomputedOutputFromZip(
+          voyagePath,
+          standalonePlaybackPath,
+          index.recomputedOutput.fileName,
+        );
+      }
     } catch (error) {
       await cleanupStandalonePlayback();
       standalonePlaybackSpec = null;
@@ -1178,6 +1194,15 @@ module.exports = function ajrmMarineCapture(app) {
     replayController = createRecordedOutputReplayController({
       filePath: standalonePlaybackPath,
       startAtMs,
+      preparedInput: standalonePlaybackSpec.preparedInput,
+      onPrepared(input) {
+        if (
+          standalonePlaybackSpec?.file === fileName &&
+          standalonePlaybackSpec?.mode === "recorded-output"
+        ) {
+          standalonePlaybackSpec.preparedInput = input;
+        }
+      },
       maximumLagMs: options.replayMaximumLagSeconds * 1000,
       emitDelta(delta) {
         app.handleMessage(plugin.id, delta);
@@ -1214,9 +1239,8 @@ module.exports = function ajrmMarineCapture(app) {
         publishState();
         return playback;
       })
-      .finally(async () => {
+      .finally(() => {
         replayController = null;
-        await cleanupStandalonePlayback();
         if (replayRunPromise === run) replayRunPromise = null;
       });
     replayRunPromise = run;
@@ -1245,11 +1269,22 @@ module.exports = function ajrmMarineCapture(app) {
     ) {
       throw new Error("This voyage has no complete canonical sensor-input stream");
     }
+    const reusablePreparedStream = await canReuseStandalonePlayback(
+      fileName,
+      "canonical-input",
+    );
+    const preparedInput = reusablePreparedStream
+      ? standalonePlaybackSpec?.preparedInput || null
+      : null;
+    if (!reusablePreparedStream) {
+      await cleanupStandalonePlayback({ clearSpec: true });
+    }
     standalonePlaybackSpec = {
       file: fileName,
       mode: "canonical-input",
       useSavedResults: false,
       startAtMs: Math.max(0, Number(startAtMs) || 0),
+      preparedInput,
     };
     finalisation = null;
     const originalFrom = index.startedAt || null;
@@ -1264,6 +1299,7 @@ module.exports = function ajrmMarineCapture(app) {
         fileName,
         inputContract: INPUT_CONTRACT,
         replayContract: REPLAY_CONTRACT,
+        preparedStreamReused: reusablePreparedStream,
         replayOriginalAt: Number.isFinite(originalFromMs)
           ? new Date(originalFromMs + Number(status.sourceElapsedMs || 0)).toISOString()
           : null,
@@ -1277,13 +1313,15 @@ module.exports = function ajrmMarineCapture(app) {
     publishState();
     try {
       await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
-      const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
-      await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
-      standalonePlaybackPath = path.join(
-        replayWorkDirectory,
-        `canonical-input-${randomUUID()}.jsonl`,
-      );
-      await extractCanonicalInputFromZip(voyagePath, standalonePlaybackPath);
+      if (!reusablePreparedStream) {
+        const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
+        await fs.promises.mkdir(replayWorkDirectory, { recursive: true });
+        standalonePlaybackPath = path.join(
+          replayWorkDirectory,
+          `canonical-input-${randomUUID()}.jsonl`,
+        );
+        await extractCanonicalInputFromZip(voyagePath, standalonePlaybackPath);
+      }
     } catch (error) {
       await cleanupStandalonePlayback();
       standalonePlaybackSpec = null;
@@ -1301,6 +1339,15 @@ module.exports = function ajrmMarineCapture(app) {
     replayController = createReplayController({
       filePath: standalonePlaybackPath,
       startAtMs,
+      preparedInput: standalonePlaybackSpec.preparedInput,
+      onPrepared(input) {
+        if (
+          standalonePlaybackSpec?.file === fileName &&
+          standalonePlaybackSpec?.mode === "canonical-input"
+        ) {
+          standalonePlaybackSpec.preparedInput = input;
+        }
+      },
       maximumLagMs: options.replayMaximumLagSeconds * 1000,
       emitDelta(delta) {
         app.handleMessage(plugin.id, delta);
@@ -1334,9 +1381,8 @@ module.exports = function ajrmMarineCapture(app) {
         publishState();
         return playback;
       })
-      .finally(async () => {
+      .finally(() => {
         replayController = null;
-        await cleanupStandalonePlayback();
         if (replayRunPromise === run) replayRunPromise = null;
       });
     replayRunPromise = run;
@@ -1356,10 +1402,23 @@ module.exports = function ajrmMarineCapture(app) {
     return playback;
   }
 
-  async function cleanupStandalonePlayback() {
+  async function canReuseStandalonePlayback(file, mode) {
+    if (
+      standalonePlaybackSpec?.file !== file ||
+      standalonePlaybackSpec?.mode !== mode ||
+      !standalonePlaybackPath
+    ) {
+      return false;
+    }
+    const info = await fs.promises.stat(standalonePlaybackPath).catch(() => null);
+    return info?.isFile() && info.size > 0;
+  }
+
+  async function cleanupStandalonePlayback({ clearSpec = false } = {}) {
     const filePath = standalonePlaybackPath;
     standalonePlaybackPath = null;
     if (filePath) await fs.promises.unlink(filePath).catch(() => {});
+    if (clearSpec) standalonePlaybackSpec = null;
   }
 
   function assertOrdinaryVoyageCanStop() {
@@ -1374,6 +1433,9 @@ module.exports = function ajrmMarineCapture(app) {
     await startupRecoveryPromise;
     if (startVoyagePromise) return startVoyagePromise;
     if (currentVoyage) return summarizeVoyage(currentVoyage);
+    if (!startOptions.recomputedReplay) {
+      await cleanupStandalonePlayback({ clearSpec: true });
+    }
     const startOperation = performVoyageStart(reason, startOptions);
     startVoyagePromise = startOperation;
     try {

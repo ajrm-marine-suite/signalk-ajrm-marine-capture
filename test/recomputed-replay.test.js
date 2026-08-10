@@ -547,6 +547,19 @@ test("recorded-result playback can be stopped without creating a voyage", async 
     assert.equal(stopped.statusCode, 200);
     assert.equal(stopped.body.playback.state, "aborted");
     assert.equal(stopped.body.playback.recording, false);
+    const seeked = await invoke(routes, "POST", "/voyage/player/seek", {
+      positionMs: 30_000,
+    });
+    assert.equal(seeked.statusCode, 200);
+    assert.equal(seeked.body.playback.preparedStreamReused, true);
+    assert.equal(seeked.body.playback.sourceElapsedMs, 30_000);
+    const stoppedAfterSeek = await invoke(
+      routes,
+      "POST",
+      "/voyage/playback/stop",
+      {},
+    );
+    assert.equal(stoppedAfterSeek.statusCode, 200);
     const rewound = await invoke(routes, "POST", "/voyage/player/rewind", {});
     assert.equal(rewound.statusCode, 200);
     assert.equal(rewound.body.loaded.file, fileName);
