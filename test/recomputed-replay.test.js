@@ -6,6 +6,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const zlib = require("node:zlib");
 const AdmZip = require("adm-zip");
 
 const createPlugin = require("../plugin");
@@ -13,6 +14,7 @@ const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_CONTRACT,
+  RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
   RECORDED_OUTPUT_PLAYBACK_CONTRACT,
   REPLAY_CONTRACT,
@@ -158,6 +160,13 @@ test("ordinary voyage optionally records a complete calculated-result stream", a
         values: [{ path: "plugins.ajrmMarineTraffic.voyageState", value: { moving: true } }],
       }],
     });
+    app.signalk.emit("delta", {
+      context: "vessels.self",
+      updates: [{
+        $source: "signalk-ajrm-marine-capture.XX",
+        values: [{ path: "plugins.ajrmMarineCapture.state", value: "recording" }],
+      }],
+    });
     const stopped = await invoke(routes, "POST", "/voyage/stop", {});
     const zip = new AdmZip(stopped.body.bundle.path);
     const index = JSON.parse(zip.readAsText("index.json"));
@@ -165,7 +174,23 @@ test("ordinary voyage optionally records a complete calculated-result stream", a
     assert.equal(index.recomputedOutput.complete, true);
     assert.equal(index.recomputedOutput.origin, "live");
     assert.equal(index.recomputedOutput.records, 2);
-    assert.equal(zip.getEntry(RECOMPUTED_OUTPUT_RELATIVE_PATH) !== null, true);
+    assert.equal(index.recomputedOutput.fileName, RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH);
+    assert.equal(index.recomputedOutput.compression, "gzip");
+    const resultEntry = zip.getEntry(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH);
+    assert.ok(resultEntry);
+    const resultText = zlib.gunzipSync(resultEntry.getData()).toString("utf8");
+    assert.equal(index.recomputedOutput.bytes, resultEntry.getData().length);
+    assert.equal(index.recomputedOutput.uncompressedBytes, Buffer.byteLength(resultText));
+    const resultLines = resultText
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.equal(resultLines.length, 2);
+    assert.equal(
+      resultLines.some((record) => record.delta.updates?.some((update) =>
+        update.$source === "signalk-ajrm-marine-capture.XX")),
+      false,
+    );
     const status = await invoke(routes, "GET", "/status");
     const listed = status.body.voyages.find(
       (voyage) => voyage.fileName === stopped.body.bundle.fileName,
@@ -290,7 +315,7 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
     assert.equal(index.canonicalInput.complete, true);
     assert.equal(index.canonicalInput.inheritedFrom, parentFileName);
     assert.ok(zip.getEntry(INPUT_RELATIVE_PATH));
-    assert.ok(zip.getEntry(RECOMPUTED_OUTPUT_RELATIVE_PATH));
+    assert.ok(zip.getEntry(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH));
     const checkpoint = JSON.parse(
       zip.readAsText("system/recomputed-replay-completion.json"),
     );
@@ -522,6 +547,10 @@ test("recorded-result playback can be stopped without creating a voyage", async 
     assert.equal(stopped.statusCode, 200);
     assert.equal(stopped.body.playback.state, "aborted");
     assert.equal(stopped.body.playback.recording, false);
+    const rewound = await invoke(routes, "POST", "/voyage/player/rewind", {});
+    assert.equal(rewound.statusCode, 200);
+    assert.equal(rewound.body.loaded.file, fileName);
+    assert.equal(rewound.body.playback.state, "idle");
     const status = await invoke(routes, "GET", "/status");
     assert.equal(status.body.currentVoyage, null);
     assert.equal(status.body.lastBundle, null);
@@ -575,7 +604,7 @@ test("failed canonical extraction rolls back the child voyage transaction", asyn
   }
 });
 
-test("startup recovers an interrupted ordinary voyage and trims only a torn final record", async () => {
+test("startup recovers interrupted input and gzip result streams and trims torn final records", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-startup-recovery-"));
   const voyageDirectory = path.join(root, "voyages");
   const voyageId = "voyage-20260803T190853Z";
@@ -601,7 +630,8 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
       recomputedOutput: {
         contract: RECOMPUTED_OUTPUT_CONTRACT,
         schemaVersion: 1,
-        fileName: RECOMPUTED_OUTPUT_RELATIVE_PATH,
+        fileName: RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
+        compression: "gzip",
         origin: "live",
         records: 0,
         bytes: 0,
@@ -652,9 +682,11 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
     },
   }));
   const completeOutput = `${outputRecords.map((record) => JSON.stringify(record)).join("\n")}\n`;
+  const tornOutputFragment = '{"contract":"ajrm-marine-recomputed-output-v1"';
+  const interruptedGzip = zlib.gzipSync(`${completeOutput}${tornOutputFragment}`);
   await fs.writeFile(
-    path.join(workingDirectory, RECOMPUTED_OUTPUT_RELATIVE_PATH),
-    completeOutput,
+    path.join(workingDirectory, RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH),
+    interruptedGzip.subarray(0, interruptedGzip.length - 8),
   );
   const drSamples = [100, 500, 900].map((elapsedMs) => ({
     ts: new Date(Date.parse("2026-08-03T19:08:53.000Z") + elapsedMs).toISOString(),
@@ -694,7 +726,16 @@ test("startup recovers an interrupted ordinary voyage and trims only a torn fina
     assert.equal(index.recomputedOutput.recoveredAfterRestart, true);
     assert.equal(index.recomputedOutput.origin, "live");
     assert.equal(index.recomputedOutput.records, 2);
-    assert.equal(zip.readAsText(RECOMPUTED_OUTPUT_RELATIVE_PATH), completeOutput);
+    assert.equal(index.recomputedOutput.fileName, RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH);
+    assert.equal(index.recomputedOutput.compression, "gzip");
+    assert.equal(
+      index.recomputedOutput.truncatedTrailingBytes,
+      Buffer.byteLength(tornOutputFragment),
+    );
+    assert.equal(
+      zlib.gunzipSync(zip.getEntry(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH).getData()).toString("utf8"),
+      completeOutput,
+    );
     assert.equal(index.drTrack.samples, 3);
     assert.equal(index.drTrack.firstSampleAt, drSamples[0].ts);
     assert.equal(index.drTrack.lastSampleAt, drSamples[2].ts);

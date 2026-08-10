@@ -6,11 +6,14 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const zlib = require("node:zlib");
+const { pipeline } = require("node:stream/promises");
 const yauzl = require("yauzl");
 
 const {
   INPUT_RELATIVE_PATH,
   LEGACY_INPUT_RELATIVE_PATH,
+  RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
 } = require("./canonical-voyage");
 
@@ -29,20 +32,28 @@ function extractCanonicalInputFromZip(zipPath, targetPath) {
   });
 }
 
-function extractRecomputedOutputFromZip(zipPath, targetPath) {
+function extractRecomputedOutputFromZip(zipPath, targetPath, declaredPath = null) {
+  const supportedPaths = [
+    RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
+    RECOMPUTED_OUTPUT_RELATIVE_PATH,
+  ];
+  const candidates = supportedPaths.includes(declaredPath)
+    ? new Set([declaredPath])
+    : new Set(supportedPaths);
   return extractVoyageEntryFromZip(zipPath, targetPath, {
-    candidates: new Set([RECOMPUTED_OUTPUT_RELATIVE_PATH]),
+    candidates,
     missingMessage:
-      `Voyage does not contain the required recorded result ${RECOMPUTED_OUTPUT_RELATIVE_PATH}`,
+      `Voyage does not contain a supported recorded result (${supportedPaths.join(" or ")})`,
     readMessage: "Unable to read recorded voyage result",
     emptyMessage: "Recorded voyage result is empty",
+    decodeGzip: true,
   });
 }
 
 function extractVoyageEntryFromZip(
   zipPath,
   targetPath,
-  { candidates, missingMessage, readMessage, emptyMessage },
+  { candidates, missingMessage, readMessage, emptyMessage, decodeGzip = false },
 ) {
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (openError, zip) => {
@@ -81,34 +92,25 @@ function extractVoyageEntryFromZip(
               });
               const cleanup = () =>
                 fs.promises.unlink(temporaryPath).catch(() => {});
-              input.once("error", (error) => {
-                output.destroy();
-                cleanup().finally(() => finish(error));
-              });
-              output.once("error", (error) => {
-                input.destroy();
-                cleanup().finally(() => finish(error));
-              });
-              output.once("finish", () => {
-                fs.promises.rename(temporaryPath, targetPath)
-                  .then(() =>
-                    fs.promises.stat(targetPath),
-                  )
-                  .then((info) => {
-                    if (!info.isFile() || info.size <= 0) {
-                      throw new Error(emptyMessage);
-                    }
-                    finish(null, {
-                      path: targetPath,
-                      bytes: info.size,
-                      entry: entry.fileName,
-                    });
-                  })
-                  .catch((error) =>
-                    cleanup().finally(() => finish(error)),
-                  );
-              });
-              input.pipe(output);
+              const streams = decodeGzip && entry.fileName.endsWith(".gz")
+                ? [input, zlib.createGunzip(), output]
+                : [input, output];
+              pipeline(...streams)
+                .then(() => fs.promises.rename(temporaryPath, targetPath))
+                .then(() => fs.promises.stat(targetPath))
+                .then((info) => {
+                  if (!info.isFile() || info.size <= 0) {
+                    throw new Error(emptyMessage);
+                  }
+                  finish(null, {
+                    path: targetPath,
+                    bytes: info.size,
+                    entry: entry.fileName,
+                  });
+                })
+                .catch((error) =>
+                  cleanup().finally(() => finish(error)),
+                );
             });
           })
           .catch((error) => finish(error));

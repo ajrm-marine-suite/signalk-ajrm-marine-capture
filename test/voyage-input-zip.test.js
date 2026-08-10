@@ -5,15 +5,19 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const zlib = require("node:zlib");
 const AdmZip = require("adm-zip");
 
 const {
   INPUT_RELATIVE_PATH,
   LEGACY_INPUT_RELATIVE_PATH,
+  RECOMPUTED_OUTPUT_CONTRACT,
+  RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   canonicalInputRecord,
 } = require("../plugin/canonical-voyage");
 const {
   extractCanonicalInputFromZip,
+  extractRecomputedOutputFromZip,
 } = require("../plugin/voyage-input-zip");
 
 test("canonical input is streamed from a voyage ZIP", async () => {
@@ -56,6 +60,34 @@ test("legacy vendor-named canonical input remains replayable", async () => {
   zip.writeZip(zipPath);
   const result = await extractCanonicalInputFromZip(zipPath, targetPath);
   assert.equal(result.entry, LEGACY_INPUT_RELATIVE_PATH);
+  assert.equal(await fs.readFile(targetPath, "utf8"), content);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("gzip saved results are streamed from a voyage ZIP and decoded for playback", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-result-gzip-"));
+  const zipPath = path.join(root, "voyage.zip");
+  const targetPath = path.join(root, "replay", "output.jsonl");
+  const content = `${JSON.stringify({
+    contract: RECOMPUTED_OUTPUT_CONTRACT,
+    schemaVersion: 1,
+    elapsedMs: 0,
+    delta: {
+      updates: [{
+        $source: "signalk-ajrm-marine-traffic",
+        values: [{ path: "plugins.ajrmMarineTraffic.voyageState", value: { moving: true } }],
+      }],
+    },
+  })}\n`;
+  const zip = new AdmZip();
+  zip.addFile(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH, zlib.gzipSync(content));
+  zip.writeZip(zipPath);
+  const result = await extractRecomputedOutputFromZip(
+    zipPath,
+    targetPath,
+    RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
+  );
+  assert.equal(result.entry, RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH);
   assert.equal(await fs.readFile(targetPath, "utf8"), content);
   await fs.rm(root, { recursive: true, force: true });
 });

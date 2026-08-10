@@ -441,11 +441,12 @@ function titleCase(value) {
 }
 
 function renderVoyageBundles(voyages) {
-  if (selectedBundle) {
-    selectedBundle = voyages.find(
-      (voyage) => voyage.fileName === selectedBundle.fileName,
-    ) || null;
-  }
+  // Playback status retains the loaded filename after Stop. Use it to restore
+  // the row if a concurrent status refresh briefly omitted the selected ZIP.
+  const selectedFileName = selectedBundle?.fileName || latestStatus?.playback?.fileName;
+  selectedBundle = selectedFileName
+    ? voyages.find((voyage) => voyage.fileName === selectedFileName) || null
+    : null;
   updateSelectedBundleActions();
   if (!voyages.length) {
     elements.voyageBundles.innerHTML = '<p class="empty">No voyage bundles yet.</p>';

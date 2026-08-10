@@ -7,7 +7,7 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.10.0` provides one voyage player for saved-result playback,
+Version `0.10.1` provides one voyage player for saved-result playback,
 fresh calculation from recorded inputs, and lineage-preserving recapture.
 
 ## The simple data model
@@ -38,12 +38,16 @@ Enable **Record calculated results as well as sensor inputs** to also write a
 time-aligned Signal K result stream to:
 
 ```text
-recomputed/output.jsonl
+recomputed/output.jsonl.gz
 ```
 
-That file is the saved result stream. The setting is stored on the Signal K
-server and survives browser and Signal K restarts. Capture excludes its own
-status deltas so it cannot recursively record itself.
+That file is the gzip-compressed saved result stream. It is compressed while
+recording, so a long result-bearing voyage does not first consume the full
+uncompressed size on the Pi. The setting is stored on the Signal K server and
+survives browser and Signal K restarts. Capture excludes its own status deltas,
+including suffixed Signal K source IDs, so it cannot recursively record itself.
+Older bundles containing uncompressed `recomputed/output.jsonl` remain
+playable.
 
 ## Voyage player
 
@@ -53,6 +57,8 @@ results, saved results only, or no playable stream) and **Integrity**
 
 Every voyage with complete canonical inputs can be played. The player offers
 return-to-start, 30-second back/forward, play, pause, and stop controls.
+Stopping leaves the voyage selected and loaded, ready to return to the start
+or play again.
 Pausing excludes the paused interval from effective-rate validation. Both
 playback modes run on the Signal K server and continue if the browser closes.
 
@@ -107,7 +113,8 @@ output cannot enter a single child result stream.
 ### Saved-result playback
 
 For a voyage containing saved results, select **Use saved results** and press
-Play to emit its stored `recomputed/output.jsonl` stream at fixed `1x`.
+Play to emit its stored compressed or legacy uncompressed result stream at
+fixed `1x`.
 Capture does not
 open a new voyage, collect snapshots, write another result stream, or build
 another ZIP.
@@ -192,7 +199,7 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.0 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.1 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

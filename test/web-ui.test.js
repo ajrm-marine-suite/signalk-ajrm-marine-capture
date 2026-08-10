@@ -71,6 +71,10 @@ test("UI exposes one explicit player with saved-result and recapture modes", () 
   assert.match(appSource, /Complete · finalising recomputed result/);
   assert.match(htmlSource, /stopping early preserves an explicitly partial result/);
   assert.match(appSource, /Inputs only/);
+  assert.match(
+    appSource,
+    /selectedBundle\?\.fileName \|\| latestStatus\?\.playback\?\.fileName/,
+  );
 });
 
 test("Voyage downloads stream through the browser without buffering the ZIP in memory", () => {

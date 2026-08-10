@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1
+
+- Stream calculated-result recording through gzip to bound temporary disk use
+  while retaining playback support for legacy uncompressed result streams.
+- Exclude Capture's suffixed Signal K source IDs, such as `.XX`, from the saved
+  result stream so Capture cannot record its own published status.
+- Keep the loaded voyage selected after Stop so it remains ready for return to
+  start, seeking, or another playback.
+
 ## 0.10.0
 
 - Add the persistent **Record calculated results as well as sensor inputs**

@@ -7,8 +7,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
+const { pipeline } = require("node:stream/promises");
 const AdmZip = require("adm-zip");
 const { ZipArchive } = require("archiver");
 const yauzl = require("yauzl");
@@ -20,6 +22,7 @@ const {
   INPUT_RELATIVE_PATH,
   LEGACY_INPUT_RELATIVE_PATH,
   PHYSICAL_SOURCE_TYPES,
+  RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_CONTRACT,
   RECORDED_OUTPUT_PLAYBACK_CONTRACT,
@@ -736,9 +739,12 @@ module.exports = function ajrmMarineCapture(app) {
       const updates = Array.isArray(delta?.updates) ? delta.updates : [];
       const captureOwned = updates.length > 0
         ? updates.every((update) =>
-            String(update?.$source || update?.source?.label || "") === plugin.id,
+            sourceBelongsToPlugin(
+              update?.$source || update?.source?.label || deltaSource,
+              plugin.id,
+            ),
           )
-        : deltaSource === plugin.id;
+        : sourceBelongsToPlugin(deltaSource, plugin.id);
       if (!captureOwned) {
         const capturedAt = new Date().toISOString();
         const elapsedMs = Math.max(
@@ -791,8 +797,10 @@ module.exports = function ajrmMarineCapture(app) {
     try {
       const line = `${JSON.stringify(record)}\n`;
       const state = voyage[field];
+      const lineBytes = Buffer.byteLength(line);
       state.records += 1;
-      state.bytes += Buffer.byteLength(line);
+      if (state.compression === "gzip") state.uncompressedBytes += lineBytes;
+      else state.bytes += lineBytes;
       state.lastElapsedMs = Number(record.elapsedMs) || 0;
       if (!state.firstCapturedAt) state.firstCapturedAt = record.capturedAt || null;
       state.lastCapturedAt = record.capturedAt || state.lastCapturedAt || null;
@@ -1120,7 +1128,11 @@ module.exports = function ajrmMarineCapture(app) {
       `recorded-output-${randomUUID()}.jsonl`,
     );
     try {
-      await extractRecomputedOutputFromZip(voyagePath, standalonePlaybackPath);
+      await extractRecomputedOutputFromZip(
+        voyagePath,
+        standalonePlaybackPath,
+        index.recomputedOutput.fileName,
+      );
     } catch (error) {
       await cleanupStandalonePlayback();
       throw error;
@@ -1424,10 +1436,12 @@ module.exports = function ajrmMarineCapture(app) {
         ? {
             contract: RECOMPUTED_OUTPUT_CONTRACT,
             schemaVersion: 1,
-            fileName: RECOMPUTED_OUTPUT_RELATIVE_PATH,
+            fileName: RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
+            compression: "gzip",
             origin: startOptions.recomputedReplay ? "recaptured" : "live",
             records: 0,
             bytes: 0,
+            uncompressedBytes: 0,
             lastElapsedMs: 0,
             writeErrors: 0,
           }
@@ -1466,10 +1480,7 @@ module.exports = function ajrmMarineCapture(app) {
       flags: "a",
     });
     if (currentVoyage.recomputedOutput) {
-      currentVoyage.recomputedOutputStream = fs.createWriteStream(
-        path.join(directory, RECOMPUTED_OUTPUT_RELATIVE_PATH),
-        { flags: "a" },
-      );
+      openRecomputedOutputStream(currentVoyage);
     }
     if (!currentVoyage.recomputedReplay) {
       currentVoyage.canonicalInputStream = fs.createWriteStream(
@@ -1663,6 +1674,23 @@ module.exports = function ajrmMarineCapture(app) {
       });
   }
 
+  function openRecomputedOutputStream(voyage) {
+    const gzip = zlib.createGzip({ level: 6 });
+    const fileStream = fs.createWriteStream(
+      path.join(voyage.directory, voyage.recomputedOutput.fileName),
+      { flags: "wx", mode: 0o600 },
+    );
+    const completion = pipeline(gzip, fileStream);
+    // Attach a handler immediately so an early disk/compression failure cannot
+    // become an unhandled rejection before normal voyage finalisation awaits it.
+    completion.catch((error) => {
+      voyage.recomputedOutput.writeErrors += 1;
+      logError("recomputedOutput gzip stream failed", error);
+    });
+    voyage.recomputedOutputStream = gzip;
+    voyage.recomputedOutputPipeline = completion;
+  }
+
   async function closeCanonicalVoyageStreams(voyage) {
     const streams = [
       ["canonicalInputStream", "canonicalInput"],
@@ -1670,13 +1698,29 @@ module.exports = function ajrmMarineCapture(app) {
     ];
     for (const [streamField, statusField] of streams) {
       const stream = voyage?.[streamField];
+      const pipelineCompletion = statusField === "recomputedOutput"
+        ? voyage?.recomputedOutputPipeline
+        : null;
       if (voyage) delete voyage[streamField];
       if (!stream) continue;
-      await new Promise((resolve, reject) => {
-        stream.once("error", reject);
-        stream.end(resolve);
-      });
+      if (pipelineCompletion) {
+        stream.end();
+        await pipelineCompletion;
+        delete voyage.recomputedOutputPipeline;
+      } else {
+        await new Promise((resolve, reject) => {
+          stream.once("error", reject);
+          stream.once("finish", resolve);
+          stream.end();
+        });
+      }
       if (voyage[statusField]) {
+        if (statusField === "recomputedOutput") {
+          const outputInfo = await fs.promises.stat(
+            path.join(voyage.directory, voyage[statusField].fileName),
+          );
+          voyage[statusField].bytes = outputInfo.size;
+        }
         voyage[statusField].closedAt = new Date().toISOString();
         voyage[statusField].complete =
           voyage[statusField].writeErrors === 0 &&
@@ -2091,7 +2135,7 @@ module.exports = function ajrmMarineCapture(app) {
     const canonicalInput = existingIndex?.recomputedReplay
       ? existingIndex?.canonicalInput || null
       : await recoverCanonicalInputState(directory, existingIndex?.canonicalInput);
-    const recordedOutput = existingIndex?.recomputedReplay
+    const recordedOutput = completedRecomputation
       ? existingIndex?.recomputedOutput || null
       : await recoverRecordedOutputState(directory, existingIndex?.recomputedOutput);
     const voyage = {
@@ -2373,92 +2417,139 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function recoverRecordedOutputState(directory, existingState) {
-    const relativePath = existingState?.fileName || RECOMPUTED_OUTPUT_RELATIVE_PATH;
+    const supportedPaths = [
+      RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
+      RECOMPUTED_OUTPUT_RELATIVE_PATH,
+    ];
+    const declaredPath = supportedPaths.includes(existingState?.fileName)
+      ? existingState.fileName
+      : null;
+    const candidates = [declaredPath, ...supportedPaths]
+      .filter((entry, index, values) => entry && values.indexOf(entry) === index);
+    let relativePath = null;
+    for (const candidate of candidates) {
+      const info = await fs.promises.stat(path.join(directory, candidate)).catch(() => null);
+      if (info?.isFile()) {
+        relativePath = candidate;
+        break;
+      }
+    }
+    if (!relativePath) return null;
     const filePath = path.join(directory, relativePath);
-    let fileInfo = await fs.promises.stat(filePath).catch(() => null);
-    if (!fileInfo?.isFile()) return null;
-    let fileEndsWithLineBreak = false;
-    if (fileInfo.size > 0) {
-      const handle = await fs.promises.open(filePath, "r");
-      try {
-        const finalByte = Buffer.alloc(1);
-        await handle.read(finalByte, 0, 1, fileInfo.size - 1);
-        fileEndsWithLineBreak = finalByte[0] === 10 || finalByte[0] === 13;
-      } finally {
-        await handle.close();
-      }
-    }
-    const input = fs.createReadStream(filePath);
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
-    let records = 0;
-    let offset = 0;
-    let lastElapsedMs = 0;
-    let firstCapturedAt = null;
-    let lastCapturedAt = null;
-    let pendingInvalid = null;
-    for await (const line of lines) {
-      if (pendingInvalid) {
-        throw new Error(
-          `Invalid recorded result before EOF at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
+    const gzipEncoded = relativePath.endsWith(".gz");
+    const decodedPath = gzipEncoded
+      ? `${filePath}.recovery-decoded-${process.pid}-${Date.now()}`
+      : filePath;
+    try {
+      if (gzipEncoded) {
+        await pipeline(
+          fs.createReadStream(filePath),
+          zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }),
+          fs.createWriteStream(decodedPath, { flags: "wx", mode: 0o600 }),
         );
       }
-      const lineBytes = Buffer.byteLength(line) + 1;
-      if (!line) {
-        offset += lineBytes;
-        continue;
-      }
-      try {
-        const record = JSON.parse(line);
-        if (
-          record?.contract !== RECOMPUTED_OUTPUT_CONTRACT ||
-          record?.schemaVersion !== 1 ||
-          !Number.isFinite(record?.elapsedMs) ||
-          record.elapsedMs < lastElapsedMs ||
-          !Array.isArray(record?.delta?.updates)
-        ) {
-          throw new Error("record does not satisfy the saved-result contract");
+      let decodedInfo = await fs.promises.stat(decodedPath);
+      let fileEndsWithLineBreak = false;
+      if (decodedInfo.size > 0) {
+        const handle = await fs.promises.open(decodedPath, "r");
+        try {
+          const finalByte = Buffer.alloc(1);
+          await handle.read(finalByte, 0, 1, decodedInfo.size - 1);
+          fileEndsWithLineBreak = finalByte[0] === 10 || finalByte[0] === 13;
+        } finally {
+          await handle.close();
         }
-        records += 1;
-        lastElapsedMs = record.elapsedMs;
-        if (!firstCapturedAt) firstCapturedAt = record.capturedAt || null;
-        lastCapturedAt = record.capturedAt || lastCapturedAt;
-      } catch (error) {
-        pendingInvalid = {
-          offset,
-          error,
-          recoverableTrailingFragment:
-            error instanceof SyntaxError && !fileEndsWithLineBreak,
-        };
       }
-      offset += lineBytes;
-    }
-    let truncatedTrailingBytes = 0;
-    if (pendingInvalid) {
-      if (!pendingInvalid.recoverableTrailingFragment) {
-        throw new Error(
-          `Invalid final recorded result at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
-        );
+      const input = fs.createReadStream(decodedPath);
+      const lines = readline.createInterface({ input, crlfDelay: Infinity });
+      let records = 0;
+      let offset = 0;
+      let lastElapsedMs = 0;
+      let firstCapturedAt = null;
+      let lastCapturedAt = null;
+      let pendingInvalid = null;
+      for await (const line of lines) {
+        if (pendingInvalid) {
+          throw new Error(
+            `Invalid recorded result before EOF at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
+          );
+        }
+        const lineBytes = Buffer.byteLength(line) + 1;
+        if (!line) {
+          offset += lineBytes;
+          continue;
+        }
+        try {
+          const record = JSON.parse(line);
+          if (
+            record?.contract !== RECOMPUTED_OUTPUT_CONTRACT ||
+            record?.schemaVersion !== 1 ||
+            !Number.isFinite(record?.elapsedMs) ||
+            record.elapsedMs < lastElapsedMs ||
+            !Array.isArray(record?.delta?.updates)
+          ) {
+            throw new Error("record does not satisfy the saved-result contract");
+          }
+          records += 1;
+          lastElapsedMs = record.elapsedMs;
+          if (!firstCapturedAt) firstCapturedAt = record.capturedAt || null;
+          lastCapturedAt = record.capturedAt || lastCapturedAt;
+        } catch (error) {
+          pendingInvalid = {
+            offset,
+            error,
+            recoverableTrailingFragment:
+              error instanceof SyntaxError && !fileEndsWithLineBreak,
+          };
+        }
+        offset += lineBytes;
       }
-      truncatedTrailingBytes = Math.max(0, fileInfo.size - pendingInvalid.offset);
-      await fs.promises.truncate(filePath, pendingInvalid.offset);
-      fileInfo = await fs.promises.stat(filePath);
+      let truncatedTrailingBytes = 0;
+      if (pendingInvalid) {
+        if (!pendingInvalid.recoverableTrailingFragment) {
+          throw new Error(
+            `Invalid final recorded result at byte ${pendingInvalid.offset}: ${pendingInvalid.error.message}`,
+          );
+        }
+        truncatedTrailingBytes = Math.max(0, decodedInfo.size - pendingInvalid.offset);
+        await fs.promises.truncate(decodedPath, pendingInvalid.offset);
+        decodedInfo = await fs.promises.stat(decodedPath);
+      }
+      if (gzipEncoded) {
+        const recoveredPath = `${filePath}.recovered-${process.pid}-${Date.now()}`;
+        try {
+          await pipeline(
+            fs.createReadStream(decodedPath),
+            zlib.createGzip({ level: 6 }),
+            fs.createWriteStream(recoveredPath, { flags: "wx", mode: 0o600 }),
+          );
+          await fs.promises.rename(recoveredPath, filePath);
+        } finally {
+          await fs.promises.unlink(recoveredPath).catch(() => {});
+        }
+      }
+      const storedInfo = await fs.promises.stat(filePath);
+      return {
+        contract: RECOMPUTED_OUTPUT_CONTRACT,
+        schemaVersion: 1,
+        fileName: relativePath,
+        compression: gzipEncoded ? "gzip" : null,
+        origin: existingState?.origin || "live",
+        records,
+        bytes: storedInfo.size,
+        uncompressedBytes: decodedInfo.size,
+        lastElapsedMs,
+        writeErrors: Number(existingState?.writeErrors) || 0,
+        firstCapturedAt,
+        lastCapturedAt,
+        closedAt: new Date().toISOString(),
+        complete: records > 0,
+        recoveredAfterRestart: true,
+        truncatedTrailingBytes,
+      };
+    } finally {
+      if (gzipEncoded) await fs.promises.unlink(decodedPath).catch(() => {});
     }
-    return {
-      contract: RECOMPUTED_OUTPUT_CONTRACT,
-      schemaVersion: 1,
-      fileName: relativePath,
-      origin: existingState?.origin || "live",
-      records,
-      bytes: fileInfo.size,
-      lastElapsedMs,
-      writeErrors: Number(existingState?.writeErrors) || 0,
-      firstCapturedAt,
-      lastCapturedAt,
-      closedAt: new Date().toISOString(),
-      complete: records > 0,
-      recoveredAfterRestart: true,
-      truncatedTrailingBytes,
-    };
   }
 
   async function recoverDrTrackState(
@@ -2612,11 +2703,14 @@ module.exports = function ajrmMarineCapture(app) {
       ) {
         continue;
       }
-      if (result.output.fileName !== RECOMPUTED_OUTPUT_RELATIVE_PATH) {
+      if (
+        result.output.fileName !== RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH &&
+        result.output.fileName !== RECOMPUTED_OUTPUT_RELATIVE_PATH
+      ) {
         continue;
       }
       const outputInfo = await fs.promises.stat(
-        path.join(directory, RECOMPUTED_OUTPUT_RELATIVE_PATH),
+        path.join(directory, result.output.fileName),
       ).catch(() => null);
       if (
         !outputInfo?.isFile() ||
@@ -3041,7 +3135,7 @@ module.exports = function ajrmMarineCapture(app) {
         `For a recomputed child, ${PARENT_OBSERVATIONS_RELATIVE_PATH} is lineage copied from the parent and is not counted as a child observation. Verified parent Snapshot evidence stays in the named parent voyage and lineage records contain no dangling child paths.`,
         "Use snapshot timestamps and canonical recording metadata to locate interesting intervals.",
         `${INPUT_RELATIVE_PATH} is the only replayable input and contains explicitly sourced physical updates on one monotonic elapsedMs timeline.`,
-        `${RECOMPUTED_OUTPUT_RELATIVE_PATH} is output evidence only and must never be replayed as physical input.`,
+        `${voyage.recomputedOutput?.fileName || RECOMPUTED_OUTPUT_RELATIVE_PATH} is output evidence only and must never be replayed as physical input.`,
         voyage.recomputedReplay?.incomplete === true
           ? "WARNING: this recomputed replay was interrupted. It is incomplete and unverified, preserves partial evidence only, and must not be treated as proof that recalculation completed."
           : voyage.recomputedReplay?.verified === false
@@ -4523,6 +4617,16 @@ function maxFinite(...values) {
   return Math.max(...numbers);
 }
 
+function sourceBelongsToPlugin(sourceValue, pluginIdValue) {
+  const source = String(sourceValue || "").trim();
+  const pluginId = String(pluginIdValue || "").trim();
+  return Boolean(
+    source &&
+    pluginId &&
+    (source === pluginId || source.startsWith(`${pluginId}.`)),
+  );
+}
+
 function resetMovementGateForVoyageStart() {
   return {
     movingSinceMs: null,
@@ -4689,6 +4793,7 @@ module.exports._private = {
   recomputedReplayVerification,
   resetMovementGateForVoyageStart,
   sanitizeRouteSelection,
+  sourceBelongsToPlugin,
   speedKnotsFromMps,
   writeDirectoryZip,
 };
