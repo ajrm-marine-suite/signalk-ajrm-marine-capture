@@ -451,10 +451,7 @@ test("completed recorded result plays at fixed 1x without recording another voya
     assert.equal(started.statusCode, 200);
     assert.equal(started.body.playback.mode, "recorded-output");
     assert.equal(started.body.playback.recording, false);
-    await waitFor(async () => {
-      const status = await invoke(routes, "GET", "/status");
-      return status.body.playback.state === "complete";
-    });
+    await waitForPlaybackComplete(routes);
     const status = await invoke(routes, "GET", "/status");
     assert.equal(status.body.currentVoyage, null);
     assert.equal(status.body.lastBundle, null);
@@ -528,10 +525,7 @@ test("input-only voyage plays with fresh calculations without creating a child",
       recapture: false,
     });
     assert.equal(started.statusCode, 200);
-    await waitFor(async () => {
-      const status = await invoke(routes, "GET", "/status");
-      return status.body.playback.state === "complete";
-    });
+    await waitForPlaybackComplete(routes);
     const status = await invoke(routes, "GET", "/status");
     assert.equal(status.body.playback.mode, "canonical-input");
     assert.equal(status.body.playback.recording, false);
@@ -1100,13 +1094,24 @@ async function invoke(routes, method, route, body = {}) {
   return { statusCode, body: payload };
 }
 
-async function waitFor(predicate, timeoutMs = 15000) {
+async function waitFor(predicate, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Timed out waiting for replay");
+}
+
+async function waitForPlaybackComplete(routes) {
+  await waitFor(async () => {
+    const status = await invoke(routes, "GET", "/status");
+    const playback = status.body.playback;
+    if (["failed", "aborted"].includes(playback.state)) {
+      throw new Error(playback.error || `Replay ended in ${playback.state} state`);
+    }
+    return playback.state === "complete";
+  });
 }
 
 async function writeInputVoyage(voyageDirectory, fileName) {

@@ -253,7 +253,15 @@ module.exports = function ajrmMarineCapture(app) {
       logError("startup recovery failed", error);
     });
     deltaListener = (delta) => onDelta(delta);
-    app.signalk.on("delta", deltaListener);
+    if (typeof app.signalk?.on === "function") {
+      app.signalk.on("delta", deltaListener);
+    } else {
+      deltaListener = null;
+      logError(
+        "live Signal K delta subscription unavailable",
+        new Error("app.signalk.on is not available"),
+      );
+    }
     monitorTimer = setInterval(() => {
       monitor().catch((error) => logError("monitor failed", error));
     }, 5000);
@@ -272,7 +280,7 @@ module.exports = function ajrmMarineCapture(app) {
       new Error("Capture plugin stopped during voyage preparation"),
     );
     replayController?.cancel("Capture plugin stopped");
-    if (deltaListener) {
+    if (deltaListener && typeof app.signalk?.removeListener === "function") {
       app.signalk.removeListener("delta", deltaListener);
       deltaListener = null;
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.6
+
+- Run the stateful Capture test suite serially and allow constrained CI runners
+  enough time to observe replay completion, avoiding false failures caused by
+  CPU and filesystem contention between voyage tests.
+- Start cleanly in reduced Signal K lifecycle mocks that do not expose the live
+  delta EventEmitter; a real server continues to subscribe normally.
+
 ## 0.10.5
 
 - Serialize preparation, seeking, playback, recapture and recording transitions

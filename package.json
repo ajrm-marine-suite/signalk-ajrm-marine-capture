@@ -1,10 +1,10 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "Canonical voyage recorder, fixed-rate replay, review, and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
-    "test": "node --test test/*.test.js test/*.test.mjs && node --check plugin/index.js && node --check plugin/voyage-review.js && node --check public/app.js && node --check public/review/app.js && node -e \"JSON.parse(require('node:fs').readFileSync('plugin/openApi.json', 'utf8'))\""
+    "test": "node --test --test-concurrency=1 test/*.test.js test/*.test.mjs && node --check plugin/index.js && node --check plugin/voyage-review.js && node --check public/app.js && node --check public/review/app.js && node -e \"JSON.parse(require('node:fs').readFileSync('plugin/openApi.json', 'utf8'))\""
   },
   "keywords": [
     "signalk-node-server-plugin",
