@@ -190,6 +190,7 @@ function createReplayController({
   emitDelta,
   maximumLagMs = 10_000,
   minimumEffectiveRatio = 0.9,
+  minimumEffectiveRatioEvidenceMs = 10_000,
   monotonicNowMs = () => performance.now(),
   wallClockIso = () => new Date().toISOString(),
   wait = defaultWait,
@@ -203,6 +204,7 @@ function createReplayController({
     emitDelta,
     maximumLagMs,
     minimumEffectiveRatio,
+    minimumEffectiveRatioEvidenceMs,
     monotonicNowMs,
     wallClockIso,
     wait,
@@ -232,6 +234,7 @@ function createTimedReplayController({
   emitDelta,
   maximumLagMs = 10_000,
   minimumEffectiveRatio = 0.9,
+  minimumEffectiveRatioEvidenceMs = 10_000,
   monotonicNowMs = () => performance.now(),
   wallClockIso = () => new Date().toISOString(),
   wait = defaultWait,
@@ -273,6 +276,9 @@ function createTimedReplayController({
     effectiveRate: null,
     effectiveRatio: null,
     minimumEffectiveRatio,
+    minimumEffectiveRatioEvidenceMs,
+    effectiveRatioEvidenceMs: 0,
+    effectiveRatioEvidenceSufficient: false,
     maximumLagMs,
     maximumObservedLagMs: 0,
     startedAt: null,
@@ -381,11 +387,19 @@ function createTimedReplayController({
         0,
         completedPacingMs - startedPacingMs - totalPausedMs,
       );
+      const effectiveRatioEvidenceMs = Math.max(
+        0,
+        input.durationMs - pacingSourceStartMs,
+      );
       const effectiveRate =
         wallElapsedMs > 0
-          ? Math.max(0, input.durationMs - pacingSourceStartMs) / wallElapsedMs
+          ? effectiveRatioEvidenceMs / wallElapsedMs
           : 1;
-      const valid = effectiveRate >= minimumEffectiveRatio;
+      const effectiveRatioEvidenceSufficient =
+        effectiveRatioEvidenceMs >= minimumEffectiveRatioEvidenceMs;
+      const valid =
+        !effectiveRatioEvidenceSufficient ||
+        effectiveRate >= minimumEffectiveRatio;
       publish({
         state: valid ? "complete" : "failed",
         active: false,
@@ -397,10 +411,12 @@ function createTimedReplayController({
         sourceElapsedMs: input.durationMs,
         effectiveRate: round4(effectiveRate),
         effectiveRatio: round4(effectiveRate),
+        effectiveRatioEvidenceMs,
+        effectiveRatioEvidenceSufficient,
         completedAt: wallClockIso(),
         error: valid
           ? null
-          : `Effective replay ratio ${round4(effectiveRate)} is below ${minimumEffectiveRatio}`,
+          : `Effective replay ratio ${round4(effectiveRate)} is below ${minimumEffectiveRatio} over ${effectiveRatioEvidenceMs} ms`,
       });
       return { ...status };
     } catch (error) {

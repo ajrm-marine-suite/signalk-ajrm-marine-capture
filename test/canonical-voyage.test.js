@@ -284,6 +284,77 @@ test("fixed 1x replay uses one monotonic anchor and reports valid timing", async
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("short replay uses absolute lag rather than an unstable effective ratio", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-short-replay-"));
+  const file = path.join(root, "input.jsonl");
+  const records = [0, 20].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: 1 }],
+      }],
+    },
+  }));
+  await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
+  let now = 1000;
+  const replay = createReplayController({
+    filePath: file,
+    monotonicNowMs: () => now,
+    wait(milliseconds) {
+      now += milliseconds;
+      return Promise.resolve();
+    },
+    emitDelta() {
+      now += 3;
+    },
+  });
+  const result = await replay.run();
+  assert.equal(result.state, "complete");
+  assert.equal(result.valid, true);
+  assert.equal(result.effectiveRatioEvidenceMs, 20);
+  assert.equal(result.effectiveRatioEvidenceSufficient, false);
+  assert.ok(result.effectiveRatio < 0.9);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("effective-ratio validation applies after sufficient replay evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-rate-evidence-"));
+  const file = path.join(root, "input.jsonl");
+  const records = [0, 10_000].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: 1 }],
+      }],
+    },
+  }));
+  await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
+  let now = 1000;
+  let emissions = 0;
+  const replay = createReplayController({
+    filePath: file,
+    maximumLagMs: 5000,
+    monotonicNowMs: () => now,
+    wait(milliseconds) {
+      now += milliseconds;
+      return Promise.resolve();
+    },
+    emitDelta() {
+      emissions += 1;
+      if (emissions === 2) now += 2000;
+    },
+  });
+  const result = await replay.run();
+  assert.equal(result.state, "failed");
+  assert.equal(result.valid, false);
+  assert.equal(result.effectiveRatioEvidenceMs, 10_000);
+  assert.equal(result.effectiveRatioEvidenceSufficient, true);
+  assert.ok(result.effectiveRatio < 0.9);
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("replay fails rather than rebasing after excessive scheduler lag", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-canonical-lag-"));
   const file = path.join(root, "input.jsonl");

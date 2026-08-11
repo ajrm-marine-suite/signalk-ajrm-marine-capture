@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.7
+
+- Apply the minimum effective replay ratio only after ten seconds of source
+  timing evidence. Very short valid recordings are now judged by absolute
+  scheduler lag instead of an unstable ratio dominated by millisecond-scale
+  startup and completion overhead.
+- Publish the timing-evidence duration and sufficiency explicitly in playback
+  status and preserve the existing strict ratio check for real voyage runs.
+
 ## 0.10.6
 
 - Run the stateful Capture test suite serially and allow constrained CI runners
