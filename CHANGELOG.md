@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.10.5
+
+- Serialize preparation, seeking, playback, recapture and recording transitions
+  on the server so duplicate or cross-mode commands cannot race while the
+  player is not yet marked active.
+- Let Stop cancel ZIP extraction and recapture preparation safely, retaining a
+  clear aborted state without leaving a partial child voyage behind.
+- Anchor a seek at the first eligible record so a sparse source interval is not
+  replayed as an artificial wait before the jump takes effect.
+- Replace the small ±30-second controls with more useful ±5-minute controls.
+- Publish explicit preparing/seeking Capture state and disable conflicting
+  controls from server state, not only from a browser-local button latch.
+- Ignore out-of-order browser status responses that could redraw stale player
+  state after a newer command response.
+- Make concurrent ordinary Stop requests share the same finalisation promise,
+  ensuring every caller receives the current voyage ZIP rather than an older
+  `lastBundle` value.
+- Report partial-recapture ZIP construction through the normal finalisation
+  phases and preserve its explicitly unverified result.
+- Reject deletion of a voyage that is actively preparing or playing, clean the
+  loaded prepared stream when an idle voyage is deleted, and remove abandoned
+  replay-work files during startup recovery.
+
 ## 0.10.4
 
 - Reuse the extracted voyage stream and its completed validation metadata while

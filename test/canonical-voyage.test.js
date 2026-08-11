@@ -196,6 +196,7 @@ test("timed playback can start from a requested source position", async () => {
   await fs.writeFile(file, `${records.map(JSON.stringify).join("\n")}\n`);
   let now = 1000;
   const emitted = [];
+  const states = [];
   const replay = createReplayController({
     filePath: file,
     startAtMs: 150,
@@ -208,6 +209,9 @@ test("timed playback can start from a requested source position", async () => {
     emitDelta(delta) {
       emitted.push(delta);
     },
+    onStatus(status) {
+      states.push(status.state);
+    },
   });
   const result = await replay.run();
   assert.equal(emitted.length, 1);
@@ -215,6 +219,9 @@ test("timed playback can start from a requested source position", async () => {
   assert.equal(result.recordsReplayed, 3);
   assert.equal(result.sourceElapsedMs, 200);
   assert.equal(result.valid, true);
+  assert.equal(now, 1000, "seek should emit the first eligible record immediately");
+  assert.ok(states.indexOf("seeking") >= 0);
+  assert.ok(states.indexOf("replaying") > states.indexOf("seeking"));
   await fs.rm(root, { recursive: true, force: true });
 });
 

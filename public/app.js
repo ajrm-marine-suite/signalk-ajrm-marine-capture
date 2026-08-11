@@ -52,6 +52,8 @@ let recorderActionLatch = null;
 let pendingReplayAction = null;
 let replayPlayLatch = false;
 let latestStatus = null;
+let refreshSequence = 0;
+let appliedRefreshSequence = 0;
 
 elements.refreshButton.addEventListener("click", refresh);
 elements.enabledToggle.addEventListener("change", () =>
@@ -87,10 +89,10 @@ elements.rewindPlaybackButton.addEventListener("click", () =>
   replayRecorderCommand("rewind", "/voyage/player/rewind", {}),
 );
 elements.backPlaybackButton.addEventListener("click", () =>
-  seekPlayback(-30_000),
+  seekPlayback(-300_000),
 );
 elements.forwardPlaybackButton.addEventListener("click", () =>
-  seekPlayback(30_000),
+  seekPlayback(300_000),
 );
 elements.recaptureToggle.addEventListener("change", () => {
   if (elements.recaptureToggle.checked) elements.useSavedResultsToggle.checked = false;
@@ -120,13 +122,18 @@ refresh();
 setInterval(refresh, 5000);
 
 async function refresh() {
+  const sequence = ++refreshSequence;
   try {
     const response = await fetch(`${API}/status`, { cache: "no-store" });
     const status = await response.json();
     if (!response.ok || !status.ok) throw new Error(status.error || "Status failed");
+    if (sequence < appliedRefreshSequence) return;
+    appliedRefreshSequence = sequence;
     latestStatus = status;
     render(status);
   } catch (error) {
+    if (sequence < appliedRefreshSequence) return;
+    appliedRefreshSequence = sequence;
     elements.banner.textContent = error.message || String(error);
     elements.banner.classList.add("error");
   }
@@ -220,8 +227,10 @@ function renderRecorderButtons(status) {
   if (recorderActionLatch === "start" && activeVoyage === true) recorderActionLatch = null;
   if (recorderActionLatch === "stop" && activeVoyage === false) recorderActionLatch = null;
   const busy = pendingRecorderAction === "start" || pendingRecorderAction === "stop";
-  const playbackActive = status.playback?.active === true;
-  elements.startButton.disabled = busy || recorderActionLatch === "start" || activeVoyage === true || playbackActive;
+  const playbackBusy = status.playback?.active === true ||
+    Boolean(status.playerTransition) ||
+    ["preparing", "ready", "seeking"].includes(status.playback?.state);
+  elements.startButton.disabled = busy || recorderActionLatch === "start" || activeVoyage === true || playbackBusy;
   elements.stopButton.disabled =
     busy ||
     recorderActionLatch === "stop" ||
@@ -256,6 +265,8 @@ function renderReplayRecorder(status) {
   const recaptureActive = Boolean(currentVoyage && currentVoyage.recomputedReplay);
   const playbackActive = playback.active === true;
   const playbackPaused = playback.paused === true;
+  const serverTransitioning = Boolean(status.playerTransition) ||
+    ["preparing", "ready", "seeking"].includes(playback.state);
   if (
     replayPlayLatch &&
     (playbackActive || ["complete", "failed", "aborted"].includes(playback.state))
@@ -275,9 +286,13 @@ function renderReplayRecorder(status) {
   const finalisationRunning = status.finalisation?.state === "running";
   const playbackPreparing = !playbackActive && (
     pendingReplayAction === "play" ||
+    pendingReplayAction === "seek" ||
     replayPlayLatch ||
-    playback.state === "preparing"
+    Boolean(status.playerTransition) ||
+    playback.state === "preparing" ||
+    playback.state === "seeking"
   );
+  const playbackSeeking = pendingReplayAction === "seek" || playback.state === "seeking";
   const busy = replayPlayLatch ||
     pendingReplayAction === "play" ||
     pendingReplayAction === "pause" ||
@@ -285,19 +300,21 @@ function renderReplayRecorder(status) {
     pendingReplayAction === "stop" ||
     pendingReplayAction === "rewind" ||
     pendingReplayAction === "seek";
+  const controlsBusy = busy || serverTransitioning;
   if (!selectedRecordedResult) elements.useSavedResultsToggle.checked = false;
   if (elements.recaptureToggle.checked) elements.useSavedResultsToggle.checked = false;
   elements.useSavedResultsToggle.disabled =
-    busy || playbackActive || finalisationRunning || !selectedRecordedResult ||
+    controlsBusy || playbackActive || finalisationRunning || !selectedRecordedResult ||
     elements.recaptureToggle.checked;
   elements.recaptureToggle.disabled =
-    busy || playbackActive || finalisationRunning || !selectedReady;
-  elements.playPlaybackButton.disabled = busy || finalisationRunning ||
+    controlsBusy || playbackActive || finalisationRunning || !selectedReady;
+  elements.playPlaybackButton.disabled = controlsBusy || finalisationRunning ||
     (playbackActive ? !playbackPaused : !selectedReady && !selectedRecordedResult) ||
     Boolean(currentVoyage && !recaptureActive);
-  elements.pausePlaybackButton.disabled = busy || !playbackActive || playbackPaused;
-  elements.stopPlaybackButton.disabled = busy || (!playbackActive && !recaptureActive);
-  elements.rewindPlaybackButton.disabled = busy || finalisationRunning || recaptureActive ||
+  elements.pausePlaybackButton.disabled = controlsBusy || !playbackActive || playbackPaused;
+  elements.stopPlaybackButton.disabled = pendingReplayAction === "stop" ||
+    (!playbackActive && !recaptureActive && !serverTransitioning);
+  elements.rewindPlaybackButton.disabled = controlsBusy || finalisationRunning || recaptureActive ||
     (!playbackActive && playback.state === "idle");
   elements.backPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
   elements.forwardPlaybackButton.disabled = elements.rewindPlaybackButton.disabled;
@@ -307,13 +324,16 @@ function renderReplayRecorder(status) {
     recaptureActive,
     replayFinished,
     playbackPreparing,
+    playbackSeeking,
   );
   if (finalisationRunning) {
     elements.replayCaptureInfo.textContent =
       `Recapture complete; finalising ${currentVoyage?.recomputedReplay?.parentVoyage || "the new voyage"}.`;
   } else if (playbackPreparing) {
     elements.replayCaptureInfo.textContent =
-      `Preparing ${selectedBundle?.fileName || playback.fileName || "the selected voyage"} for playback.`;
+      playbackSeeking
+        ? `Seeking within ${selectedBundle?.fileName || playback.fileName || "the selected voyage"}.`
+        : `Preparing ${selectedBundle?.fileName || playback.fileName || "the selected voyage"} for playback.`;
   } else if (playbackActive) {
     elements.replayCaptureInfo.textContent =
       `${playbackPaused ? "Paused" : "Playing"} ${playback.fileName || "the selected voyage"} using ${playback.mode === "recorded-output" ? "saved results" : "fresh calculations"}${recaptureActive ? " and saving a new recaptured voyage" : " without recording"}.`;
@@ -347,6 +367,7 @@ function renderReplayProgress(
   recomputedActive,
   replayFinished,
   playbackPreparing,
+  playbackSeeking,
 ) {
   const finalisation = status.finalisation || null;
   const standalonePlayback = playback.mode === "recorded-output";
@@ -399,7 +420,7 @@ function renderReplayProgress(
   if (!(finalisation?.state === "running" && (replayFinished || finalisation.streamsClosed === true))) {
     elements.replayPlaybackState.textContent =
       playbackPreparing
-        ? "Preparing…"
+        ? playbackSeeking ? "Seeking…" : "Preparing…"
         : playback.state === "failed"
         ? `FAILED · ${playback.error || "timing failure"}`
         : playback.state === "aborted"
@@ -413,7 +434,9 @@ function renderReplayProgress(
               : titleCase(playback.state || "idle");
   }
   elements.replayProgressValue.textContent = playbackPreparing
-    ? "Extracting and validating the voyage stream…"
+    ? playbackSeeking
+      ? "Locating the requested voyage time…"
+      : "Extracting and validating the voyage stream…"
     : totalRecords > 0
       ? `${replayedRecords} of ${totalRecords} ${standalonePlayback ? "recorded result" : "input"} records · ${percent.toFixed(1)}%`
       : "-";

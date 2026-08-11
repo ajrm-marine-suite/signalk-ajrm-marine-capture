@@ -207,6 +207,48 @@ test("ordinary voyage optionally records a complete calculated-result stream", a
   }
 });
 
+test("concurrent Stop requests join the same voyage finalisation", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-shared-stop-"));
+  const voyageDirectory = path.join(root, "voyages");
+  const app = fakeApp();
+  let releaseZipBuild;
+  let reportZipBuildStarted;
+  const zipBuildStarted = new Promise((resolve) => {
+    reportZipBuildStarted = resolve;
+  });
+  const holdZipBuild = new Promise((resolve) => {
+    releaseZipBuild = resolve;
+  });
+  app.ajrmMarineCaptureTestHooks = {
+    async beforeZipBuild() {
+      reportZipBuildStarted();
+      await holdZipBuild;
+    },
+  };
+  const routes = new Map();
+  const plugin = createPlugin(app);
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    await invoke(routes, "POST", "/voyage/start", {});
+    const firstStop = invoke(routes, "POST", "/voyage/stop", {});
+    await zipBuildStarted;
+    const secondStop = invoke(routes, "POST", "/voyage/stop", {});
+    releaseZipBuild();
+    const [first, second] = await Promise.all([firstStop, secondStop]);
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.equal(second.body.bundle.fileName, first.body.bundle.fileName);
+    assert.equal(second.body.bundle.path, first.body.bundle.path);
+    const staleStop = await invoke(routes, "POST", "/voyage/stop", {});
+    assert.equal(staleStop.statusCode, 400);
+    assert.match(staleStop.body.error, /No ordinary voyage recording is active/i);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Capture replays canonical input at fixed 1x and automatically builds a verified child ZIP at EOF", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-merged-replay-"));
   const voyageDirectory = path.join(root, "voyages");
@@ -502,6 +544,134 @@ test("input-only voyage plays with fresh calculations without creating a child",
   }
 });
 
+test("player serializes preparation and rejects a concurrent Play command", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-player-serialize-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = await writeInputVoyage(voyageDirectory, "voyage-serialized.zip");
+  const routes = new Map();
+  const plugin = createPlugin(fakeApp());
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const firstRequest = invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      useSavedResults: false,
+    });
+    const duplicate = await invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      useSavedResults: false,
+    });
+    assert.equal(duplicate.statusCode, 400);
+    assert.match(duplicate.body.error, /already preparing/i);
+    const first = await firstRequest;
+    assert.equal(first.statusCode, 200);
+    const stopped = await invoke(routes, "POST", "/voyage/playback/stop", {});
+    assert.equal(stopped.statusCode, 200);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Stop cancels an in-progress player preparation", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-player-cancel-prep-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = await writeInputVoyage(voyageDirectory, "voyage-cancel-prep.zip");
+  const routes = new Map();
+  const plugin = createPlugin(fakeApp());
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const playRequest = invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      useSavedResults: false,
+    });
+    const stopped = await invoke(routes, "POST", "/voyage/playback/stop", {});
+    const play = await playRequest;
+    assert.equal(play.statusCode, 400);
+    assert.equal(stopped.statusCode, 200);
+    assert.equal(stopped.body.playback.state, "aborted");
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.playerTransition, null);
+    assert.equal(status.body.playback.state, "aborted");
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Stop cancels recapture preparation without leaving a partial voyage", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-recapture-cancel-prep-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = await writeInputVoyage(voyageDirectory, "voyage-recapture-parent.zip");
+  const routes = new Map();
+  const plugin = createPlugin(fakeApp());
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({ enabled: false, voyageDirectory, captureMode: "minimal" });
+  try {
+    const playRequest = invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      recapture: true,
+    });
+    const stopped = await invoke(routes, "POST", "/voyage/playback/stop", {});
+    const play = await playRequest;
+    assert.equal(play.statusCode, 400);
+    assert.equal(stopped.statusCode, 200);
+    assert.equal(stopped.body.playback.state, "aborted");
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.currentVoyage, null);
+    assert.equal(status.body.playerTransition, null);
+    assert.deepEqual(
+      (await fs.readdir(voyageDirectory)).filter((name) => name.endsWith(".zip")),
+      [fileName],
+    );
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stopping an active recapture reports and packages an unverified partial result", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-recapture-partial-"));
+  const voyageDirectory = path.join(root, "voyages");
+  await fs.mkdir(voyageDirectory, { recursive: true });
+  const fileName = await writeInputVoyage(voyageDirectory, "voyage-partial-parent.zip");
+  const routes = new Map();
+  const plugin = createPlugin(fakeApp());
+  plugin.registerWithRouter(routerMap(routes));
+  plugin.start({
+    enabled: false,
+    voyageDirectory,
+    captureMode: "minimal",
+    deleteWorkingDirectoryAfterZip: true,
+  });
+  try {
+    const started = await invoke(routes, "POST", "/voyage/player/play", {
+      file: fileName,
+      recapture: true,
+    });
+    assert.equal(started.statusCode, 200);
+    const stopped = await invoke(routes, "POST", "/voyage/playback/stop", {});
+    assert.equal(stopped.statusCode, 200);
+    const status = await invoke(routes, "GET", "/status");
+    assert.equal(status.body.currentVoyage, null);
+    assert.equal(status.body.finalisation.state, "complete");
+    assert.equal(status.body.finalisation.recomputationVerified, false);
+    const zip = new AdmZip(status.body.lastBundle.path);
+    const index = JSON.parse(zip.readAsText("index.json"));
+    assert.equal(index.incomplete, true);
+    assert.equal(index.recomputationVerified, false);
+    assert.equal(index.recomputedReplay.verified, false);
+    assert.equal(index.recomputedReplay.aborted, true);
+  } finally {
+    await plugin.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("recorded-result playback can be stopped without creating a voyage", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-stop-recorded-output-"));
   const voyageDirectory = path.join(root, "voyages");
@@ -547,6 +717,19 @@ test("recorded-result playback can be stopped without creating a voyage", async 
     assert.equal(stopped.statusCode, 200);
     assert.equal(stopped.body.playback.state, "aborted");
     assert.equal(stopped.body.playback.recording, false);
+    const cancelledSeekRequest = invoke(routes, "POST", "/voyage/player/seek", {
+      positionMs: 15_000,
+    });
+    const cancelledSeekStop = await invoke(
+      routes,
+      "POST",
+      "/voyage/playback/stop",
+      {},
+    );
+    const cancelledSeek = await cancelledSeekRequest;
+    assert.equal(cancelledSeek.statusCode, 400);
+    assert.equal(cancelledSeekStop.statusCode, 200);
+    assert.equal(cancelledSeekStop.body.playback.state, "aborted");
     const seeked = await invoke(routes, "POST", "/voyage/player/seek", {
       positionMs: 30_000,
     });
@@ -924,4 +1107,34 @@ async function waitFor(predicate, timeoutMs = 15000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Timed out waiting for replay");
+}
+
+async function writeInputVoyage(voyageDirectory, fileName) {
+  const records = [0, 60_000].map((elapsedMs) => canonicalInputRecord({
+    elapsedMs,
+    delta: {
+      context: "vessels.self",
+      updates: [{
+        $source: "n2k.1",
+        values: [{ path: "navigation.speedOverGround", value: 1.2 }],
+      }],
+    },
+  }));
+  const zip = new AdmZip();
+  zip.addFile("index.json", Buffer.from(JSON.stringify({
+    id: fileName.replace(/\.zip$/i, ""),
+    startedAt: "2026-08-10T18:00:00.000Z",
+    canonicalInput: {
+      contract: INPUT_CONTRACT,
+      complete: true,
+      fileName: INPUT_RELATIVE_PATH,
+      records: records.length,
+    },
+  })));
+  zip.addFile(
+    INPUT_RELATIVE_PATH,
+    Buffer.from(`${records.map(JSON.stringify).join("\n")}\n`),
+  );
+  zip.writeZip(path.join(voyageDirectory, fileName));
+  return fileName;
 }

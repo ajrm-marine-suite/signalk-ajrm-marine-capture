@@ -7,7 +7,7 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.10.4` provides one voyage player for saved-result playback,
+Version `0.10.5` provides one voyage player for saved-result playback,
 fresh calculation from recorded inputs, and lineage-preserving recapture.
 
 ## The simple data model
@@ -56,13 +56,21 @@ results, saved results only, or no playable stream) and **Integrity**
 (complete, partial, or invalid).
 
 Every voyage with complete canonical inputs can be played. The player offers
-return-to-start, 30-second back/forward, play, pause, and stop controls.
+return-to-start, five-minute back/forward, play, pause, and stop controls.
 Stopping leaves the voyage selected and loaded, ready to return to the start
 or play again. While that voyage remains loaded, Capture reuses its prepared
-temporary stream and validation result, making rewind and ±30-second seeks
-responsive without another complete ZIP extraction and validation pass.
+temporary stream and validation result, so rewind and ±5-minute seeks do not
+repeat ZIP extraction and full validation. Seeking still locates the requested
+time in the disk-backed stream, but the first record at or after that time is
+emitted immediately instead of waiting out any gap from the requested time.
 Pausing excludes the paused interval from effective-rate validation. Both
 playback modes run on the Signal K server and continue if the browser closes.
+
+Preparation, seeking, playback, recording, and finalisation are mutually
+exclusive server-side operations. A second browser cannot start a conflicting
+operation while another is preparing. Stop can cancel preparation, and stale
+browser status responses are ignored so an older poll cannot redraw controls
+over newer player state.
 
 ### Fresh calculation
 
@@ -201,7 +209,7 @@ browser's native streaming path rather than a whole-file JavaScript blob.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.4 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.5 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

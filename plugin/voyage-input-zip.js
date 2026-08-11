@@ -22,17 +22,23 @@ const INPUT_ENTRY_CANDIDATES = new Set([
   LEGACY_INPUT_RELATIVE_PATH,
 ]);
 
-function extractCanonicalInputFromZip(zipPath, targetPath) {
+function extractCanonicalInputFromZip(zipPath, targetPath, options = {}) {
   return extractVoyageEntryFromZip(zipPath, targetPath, {
     candidates: INPUT_ENTRY_CANDIDATES,
     missingMessage:
       `Parent voyage does not contain the required canonical input ${INPUT_RELATIVE_PATH}`,
     readMessage: "Unable to read canonical voyage input",
     emptyMessage: "Canonical voyage input is empty",
+    signal: options.signal,
   });
 }
 
-function extractRecomputedOutputFromZip(zipPath, targetPath, declaredPath = null) {
+function extractRecomputedOutputFromZip(
+  zipPath,
+  targetPath,
+  declaredPath = null,
+  options = {},
+) {
   const supportedPaths = [
     RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
     RECOMPUTED_OUTPUT_RELATIVE_PATH,
@@ -47,28 +53,47 @@ function extractRecomputedOutputFromZip(zipPath, targetPath, declaredPath = null
     readMessage: "Unable to read recorded voyage result",
     emptyMessage: "Recorded voyage result is empty",
     decodeGzip: true,
+    signal: options.signal,
   });
 }
 
 function extractVoyageEntryFromZip(
   zipPath,
   targetPath,
-  { candidates, missingMessage, readMessage, emptyMessage, decodeGzip = false },
+  {
+    candidates,
+    missingMessage,
+    readMessage,
+    emptyMessage,
+    decodeGzip = false,
+    signal = null,
+  },
 ) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason || new Error("Voyage preparation was cancelled"));
+      return;
+    }
     yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (openError, zip) => {
       if (openError || !zip) {
         reject(openError || new Error("Unable to open parent voyage ZIP"));
         return;
       }
       let settled = false;
+      let temporaryPath = null;
+      const abort = () => finish(signal.reason || new Error("Voyage preparation was cancelled"));
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
+        signal?.removeEventListener("abort", abort);
         zip.close();
+        if (error && temporaryPath) {
+          fs.promises.unlink(temporaryPath).catch(() => {});
+        }
         if (error) reject(error);
         else resolve(value);
       };
+      signal?.addEventListener("abort", abort, { once: true });
       zip.once("error", (error) => finish(error));
       zip.once("end", () => {
         finish(new Error(missingMessage));
@@ -85,7 +110,7 @@ function extractVoyageEntryFromZip(
                 finish(streamError || new Error(readMessage));
                 return;
               }
-              const temporaryPath = `${targetPath}.partial-${process.pid}-${Date.now()}`;
+              temporaryPath = `${targetPath}.partial-${process.pid}-${Date.now()}`;
               const output = fs.createWriteStream(temporaryPath, {
                 flags: "wx",
                 mode: 0o600,
@@ -95,7 +120,7 @@ function extractVoyageEntryFromZip(
               const streams = decodeGzip && entry.fileName.endsWith(".gz")
                 ? [input, zlib.createGunzip(), output]
                 : [input, output];
-              pipeline(...streams)
+              pipeline(...streams, signal ? { signal } : {})
                 .then(() => fs.promises.rename(temporaryPath, targetPath))
                 .then(() => fs.promises.stat(targetPath))
                 .then((info) => {

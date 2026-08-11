@@ -297,17 +297,18 @@ function createTimedReplayController({
       });
       if (cancelled) throw cancelledError(cancelReason);
 
-      const startedPacingMs = monotonicNowMs();
       const startedAt = wallClockIso();
       const requestedStartMs = Math.min(
         input.durationMs,
         Math.max(0, Number(startAtMs) || 0),
       );
+      let startedPacingMs = requestedStartMs > 0 ? null : monotonicNowMs();
+      let pacingSourceStartMs = requestedStartMs;
       let previousElapsedMs = null;
       publish({
-        state: "replaying",
-        active: true,
-        playing: true,
+        state: requestedStartMs > 0 ? "seeking" : "replaying",
+        active: requestedStartMs === 0,
+        playing: requestedStartMs === 0,
         paused: false,
         startedAt,
         sourceElapsedMs: requestedStartMs,
@@ -324,8 +325,19 @@ function createTimedReplayController({
           status.recordsReplayed += 1;
           return;
         }
+        if (startedPacingMs === null) {
+          startedPacingMs = monotonicNowMs();
+          pacingSourceStartMs = sourceElapsedMs;
+          publish({
+            state: "replaying",
+            active: true,
+            playing: true,
+            recordsReplayed: status.recordsReplayed,
+            sourceElapsedMs,
+          });
+        }
         let deadlineMs =
-          startedPacingMs + totalPausedMs + sourceElapsedMs - requestedStartMs;
+          startedPacingMs + totalPausedMs + sourceElapsedMs - pacingSourceStartMs;
         let lagMs = monotonicNowMs() - deadlineMs;
         while (lagMs < 0) {
           activeWait = wait(-lagMs);
@@ -334,7 +346,7 @@ function createTimedReplayController({
           if (cancelled) throw cancelledError(cancelReason);
           await waitWhilePaused();
           deadlineMs =
-            startedPacingMs + totalPausedMs + sourceElapsedMs - requestedStartMs;
+            startedPacingMs + totalPausedMs + sourceElapsedMs - pacingSourceStartMs;
           lagMs = monotonicNowMs() - deadlineMs;
         }
         status.maximumObservedLagMs = Math.max(
@@ -351,7 +363,7 @@ function createTimedReplayController({
         const wallElapsedMs = activeWallElapsedMs(startedPacingMs);
         const effectiveRate =
           wallElapsedMs > 0
-            ? Math.max(0, sourceElapsedMs - requestedStartMs) / wallElapsedMs
+            ? Math.max(0, sourceElapsedMs - pacingSourceStartMs) / wallElapsedMs
             : 1;
         publish({
           recordsReplayed: status.recordsReplayed + 1,
@@ -364,13 +376,14 @@ function createTimedReplayController({
       });
 
       const completedPacingMs = monotonicNowMs();
+      if (startedPacingMs === null) startedPacingMs = completedPacingMs;
       const wallElapsedMs = Math.max(
         0,
         completedPacingMs - startedPacingMs - totalPausedMs,
       );
       const effectiveRate =
         wallElapsedMs > 0
-          ? Math.max(0, input.durationMs - requestedStartMs) / wallElapsedMs
+          ? Math.max(0, input.durationMs - pacingSourceStartMs) / wallElapsedMs
           : 1;
       const valid = effectiveRate >= minimumEffectiveRatio;
       publish({

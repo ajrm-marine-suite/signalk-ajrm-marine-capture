@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AJRM Marine Voyages",
-    "version": "0.10.4",
+    "version": "0.10.5",
     "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {
@@ -23,7 +23,7 @@
       "post": {
         "summary": "Delete a voyage ZIP and any matching working directory",
         "parameters": [{ "name": "file", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Voyage deleted" }, "404": { "description": "Voyage not found" } }
+        "responses": { "200": { "description": "Voyage deleted" }, "409": { "description": "Voyage is in use" }, "404": { "description": "Voyage not found" } }
       }
     },
     "/review/status": {

@@ -103,6 +103,7 @@ module.exports = function ajrmMarineCapture(app) {
   let playback = idlePlaybackStatus();
   let replayController = null;
   let replayRunPromise = null;
+  let playerTransition = null;
   let standalonePlaybackPath = null;
   let standalonePlaybackSpec = null;
   let movementSuppressedUntilFreshSpeed = false;
@@ -121,6 +122,7 @@ module.exports = function ajrmMarineCapture(app) {
   let observationWriteQueue = Promise.resolve();
   let startupRecoveryPromise = Promise.resolve();
   let startVoyagePromise = null;
+  let stopVoyagePromise = null;
   let finalisation = null;
   const knownPhysicalInputSources = new Set();
   let lastZipProgressPublishMs = 0;
@@ -266,6 +268,9 @@ module.exports = function ajrmMarineCapture(app) {
   };
 
   plugin.stop = async () => {
+    playerTransition?.abortController.abort(
+      new Error("Capture plugin stopped during voyage preparation"),
+    );
     replayController?.cancel("Capture plugin stopped");
     if (deltaListener) {
       app.signalk.removeListener("delta", deltaListener);
@@ -276,6 +281,10 @@ module.exports = function ajrmMarineCapture(app) {
     monitorTimer = null;
     snapshotTimer = null;
     try {
+      await startupRecoveryPromise;
+      if (playerTransition?.promise) {
+        await playerTransition.promise.catch(() => {});
+      }
       if (currentVoyage?.recomputedReplay) {
         await abortRecomputedReplayVoyage("Capture plugin stopped");
       } else if (currentVoyage) {
@@ -361,12 +370,24 @@ module.exports = function ajrmMarineCapture(app) {
           return;
         }
         const filePath = path.join(options.voyageDirectory, fileName);
+        if (voyageFileIsInUse(fileName)) {
+          res.status(409).json({
+            ok: false,
+            error: "Stop or finish the loaded voyage before deleting it",
+          });
+          return;
+        }
         const info = await fs.promises.stat(filePath);
         if (!info.isFile()) {
           res.status(404).json({ ok: false, error: "Voyage bundle not found" });
           return;
         }
+        if (standalonePlaybackSpec?.file === fileName) {
+          await cleanupStandalonePlayback({ clearSpec: true });
+          playback = idlePlaybackStatus();
+        }
         await fs.promises.unlink(filePath);
+        invalidateVoyageZipCache(filePath);
         const voyageId = fileName.replace(/\.zip$/i, "");
         await fs.promises.rm(path.join(options.voyageDirectory, voyageId), {
           recursive: true,
@@ -435,7 +456,9 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/playback/stop", async (_req, res) => {
       try {
-        const result = currentVoyage?.recomputedReplay
+        const result = playerTransition
+          ? await stopStandalonePlayback("Voyage preparation stopped by user")
+          : currentVoyage?.recomputedReplay
           ? await abortRecomputedReplayVoyage("Voyage player stopped by user")
           : await stopStandalonePlayback("Voyage playback stopped by user");
         res.json({ ok: true, playback: result });
@@ -464,6 +487,9 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/player/pause", async (_req, res) => {
       try {
+        if (playerTransition) {
+          throw new Error(`Voyage player is ${playerTransition.kind}`);
+        }
         if (!replayController || playback.active !== true) {
           throw new Error("No voyage playback is active");
         }
@@ -478,6 +504,9 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/player/resume", async (_req, res) => {
       try {
+        if (playerTransition) {
+          throw new Error(`Voyage player is ${playerTransition.kind}`);
+        }
         if (!replayController || playback.active !== true) {
           throw new Error("No paused voyage playback is active");
         }
@@ -492,6 +521,9 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/player/rewind", async (_req, res) => {
       try {
+        if (playerTransition) {
+          throw new Error(`Voyage player is ${playerTransition.kind}`);
+        }
         if (currentVoyage?.recomputedReplay) {
           throw new Error("Stop the recapture before returning to the beginning");
         }
@@ -509,16 +541,8 @@ module.exports = function ajrmMarineCapture(app) {
 
     router.post("/voyage/player/seek", async (req, res) => {
       try {
-        if (currentVoyage?.recomputedReplay) {
-          throw new Error("Seeking is disabled while saving a recaptured voyage");
-        }
-        const spec = standalonePlaybackSpec;
-        if (!spec) throw new Error("No voyage is loaded in the player");
         const positionMs = Math.max(0, Number(req.body?.positionMs) || 0);
-        if (replayController) await stopStandalonePlayback("Voyage player seeking");
-        const result = spec.useSavedResults
-          ? await startRecordedOutputPlayback({ file: spec.file, startAtMs: positionMs })
-          : await startCanonicalInputPlayback({ file: spec.file, startAtMs: positionMs });
+        const result = await seekStandalonePlayback(positionMs);
         res.json({ ok: true, playback: result });
       } catch (error) {
         res.status(400).json({ ok: false, error: error.message });
@@ -707,7 +731,7 @@ module.exports = function ajrmMarineCapture(app) {
       if (!isSelfContext(context)) return;
       (update.values || []).forEach((entry) => {
         if (entry.path === "navigation.speedOverGround") {
-          if (playback.active) {
+          if (playbackIsBusy()) {
             movementSuppressedUntilFreshSpeed = true;
             return;
           }
@@ -915,7 +939,7 @@ module.exports = function ajrmMarineCapture(app) {
       movingSinceMs,
       stoppedSinceMs,
       autoStartInhibited,
-      movementSuppressed: playback.active || movementSuppressedUntilFreshSpeed,
+      movementSuppressed: playbackIsBusy() || movementSuppressedUntilFreshSpeed,
     });
     movingSinceMs = movement.movingSinceMs;
     stoppedSinceMs = movement.stoppedSinceMs;
@@ -945,7 +969,7 @@ module.exports = function ajrmMarineCapture(app) {
 
   function refreshSpeedFromSelfPath() {
     if (typeof app.getSelfPath !== "function") return;
-    if (playback.active || movementSuppressedUntilFreshSpeed) return;
+    if (playbackIsBusy() || movementSuppressedUntilFreshSpeed) return;
     sogKnots = speedKnotsFromMps(app.getSelfPath("navigation.speedOverGround"));
     stwKnots = speedKnotsFromMps(app.getSelfPath("navigation.speedThroughWater"));
     voyageState = normalizeVoyageState(app.getSelfPath(AJRM_MARINE_TRAFFIC_VOYAGE_STATE_PATH)) || voyageState;
@@ -1045,8 +1069,21 @@ module.exports = function ajrmMarineCapture(app) {
     publishState();
   }
 
-  async function startRecomputedReplayVoyage({ file, comment } = {}) {
-    if (currentVoyage) return summarizeVoyage(currentVoyage);
+  async function startRecomputedReplayVoyage({
+    file,
+    comment,
+    transitionSignal = null,
+  } = {}) {
+    if (!transitionSignal) {
+      return runPlayerTransition("preparing", (signal) =>
+        startRecomputedReplayVoyage({ file, comment, transitionSignal: signal }));
+    }
+    if (currentVoyage) {
+      throw new Error("Stop the active voyage before starting a recapture");
+    }
+    if (playback.active || replayController) {
+      throw new Error("Stop the voyage player before starting a recapture");
+    }
     const parentVoyage = safeBaseName(file);
     if (!parentVoyage || !parentVoyage.endsWith(".zip")) {
       throw new Error("Select a canonical AJRM Marine voyage ZIP to replay");
@@ -1088,10 +1125,19 @@ module.exports = function ajrmMarineCapture(app) {
     return startVoyage("recomputed replay", {
       comment: replayComment,
       recomputedReplay,
+      replayPreparationSignal: transitionSignal,
     });
   }
 
-  async function startRecordedOutputPlayback({ file, startAtMs = 0 } = {}) {
+  async function startRecordedOutputPlayback({
+    file,
+    startAtMs = 0,
+    transitionSignal = null,
+  } = {}) {
+    if (!transitionSignal) {
+      return runPlayerTransition("preparing", (signal) =>
+        startRecordedOutputPlayback({ file, startAtMs, transitionSignal: signal }));
+    }
     await startupRecoveryPromise;
     if (currentVoyage) {
       throw new Error("Stop the active voyage before playing a recorded result");
@@ -1163,6 +1209,7 @@ module.exports = function ajrmMarineCapture(app) {
     });
     publishState();
     try {
+      assertPlayerPreparationActive(transitionSignal);
       await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
       if (!reusablePreparedStream) {
         const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
@@ -1175,15 +1222,18 @@ module.exports = function ajrmMarineCapture(app) {
           voyagePath,
           standalonePlaybackPath,
           index.recomputedOutput.fileName,
+          { signal: transitionSignal },
         );
       }
+      assertPlayerPreparationActive(transitionSignal);
     } catch (error) {
-      await cleanupStandalonePlayback();
-      standalonePlaybackSpec = null;
+      if (!reusablePreparedStream) await cleanupStandalonePlayback();
+      const cancelled = transitionSignal.aborted;
+      if (!cancelled) standalonePlaybackSpec = null;
       playback = withMetadata({
         ...idlePlaybackStatus(),
         contract: RECORDED_OUTPUT_PLAYBACK_CONTRACT,
-        state: "failed",
+        state: cancelled ? "aborted" : "failed",
         error: error.message,
       });
       publishState();
@@ -1215,6 +1265,7 @@ module.exports = function ajrmMarineCapture(app) {
           playback.state === "failed" ||
           playback.state === "aborted" ||
           playback.state === "paused" ||
+          playback.state === "seeking" ||
           now - lastReplayStatusPublishMs >= 500
         ) {
           lastReplayStatusPublishMs = now;
@@ -1248,7 +1299,15 @@ module.exports = function ajrmMarineCapture(app) {
     return playback;
   }
 
-  async function startCanonicalInputPlayback({ file, startAtMs = 0 } = {}) {
+  async function startCanonicalInputPlayback({
+    file,
+    startAtMs = 0,
+    transitionSignal = null,
+  } = {}) {
+    if (!transitionSignal) {
+      return runPlayerTransition("preparing", (signal) =>
+        startCanonicalInputPlayback({ file, startAtMs, transitionSignal: signal }));
+    }
     await startupRecoveryPromise;
     if (currentVoyage) throw new Error("Stop the active voyage before playback");
     if (playback.active || replayController) {
@@ -1312,6 +1371,7 @@ module.exports = function ajrmMarineCapture(app) {
     });
     publishState();
     try {
+      assertPlayerPreparationActive(transitionSignal);
       await restoreDisplayRoute(index.routeAtStart || index.selectedRoute || null);
       if (!reusablePreparedStream) {
         const replayWorkDirectory = path.join(options.voyageDirectory, ".replay-work");
@@ -1320,15 +1380,21 @@ module.exports = function ajrmMarineCapture(app) {
           replayWorkDirectory,
           `canonical-input-${randomUUID()}.jsonl`,
         );
-        await extractCanonicalInputFromZip(voyagePath, standalonePlaybackPath);
+        await extractCanonicalInputFromZip(
+          voyagePath,
+          standalonePlaybackPath,
+          { signal: transitionSignal },
+        );
       }
+      assertPlayerPreparationActive(transitionSignal);
     } catch (error) {
-      await cleanupStandalonePlayback();
-      standalonePlaybackSpec = null;
+      if (!reusablePreparedStream) await cleanupStandalonePlayback();
+      const cancelled = transitionSignal.aborted;
+      if (!cancelled) standalonePlaybackSpec = null;
       playback = withMetadata({
         ...idlePlaybackStatus(),
         contract: REPLAY_CONTRACT,
-        state: "failed",
+        state: cancelled ? "aborted" : "failed",
         error: error.message,
       });
       publishState();
@@ -1360,6 +1426,7 @@ module.exports = function ajrmMarineCapture(app) {
           playback.state === "failed" ||
           playback.state === "aborted" ||
           playback.state === "paused" ||
+          playback.state === "seeking" ||
           now - lastReplayStatusPublishMs >= 500
         ) {
           lastReplayStatusPublishMs = now;
@@ -1391,6 +1458,26 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function stopStandalonePlayback(reason) {
+    if (playerTransition) {
+      const transition = playerTransition;
+      const fileName = playback.fileName ||
+        currentVoyage?.recomputedReplay?.parentVoyage ||
+        standalonePlaybackSpec?.file ||
+        null;
+      transition.abortController.abort(new Error(reason));
+      await transition.promise.catch(() => {});
+      if (playback.state !== "aborted") {
+        playback = {
+          ...idlePlaybackStatus(),
+          state: "aborted",
+          fileName,
+          error: reason,
+        };
+      }
+      addEvent("playback-stopped", reason);
+      publishState();
+      return playback;
+    }
     if (!replayController || currentVoyage?.recomputedReplay) {
       throw new Error("No standalone voyage playback is active");
     }
@@ -1400,6 +1487,64 @@ module.exports = function ajrmMarineCapture(app) {
     addEvent("playback-stopped", reason);
     publishState();
     return playback;
+  }
+
+  async function seekStandalonePlayback(positionMs) {
+    return runPlayerTransition("seeking", async (signal) => {
+      if (currentVoyage?.recomputedReplay) {
+        throw new Error("Seeking is disabled while saving a recaptured voyage");
+      }
+      const spec = standalonePlaybackSpec;
+      if (!spec) throw new Error("No voyage is loaded in the player");
+      if (replayController) {
+        replayController.cancel("Voyage player seeking");
+        const run = replayRunPromise;
+        if (run) await run;
+      }
+      return spec.useSavedResults
+        ? startRecordedOutputPlayback({
+            file: spec.file,
+            startAtMs: positionMs,
+            transitionSignal: signal,
+          })
+        : startCanonicalInputPlayback({
+            file: spec.file,
+            startAtMs: positionMs,
+            transitionSignal: signal,
+          });
+    });
+  }
+
+  async function runPlayerTransition(kind, operation) {
+    if (playerTransition) {
+      throw new Error(`Voyage player is already ${playerTransition.kind}`);
+    }
+    const transition = {
+      kind,
+      startedAt: new Date().toISOString(),
+      abortController: new AbortController(),
+      promise: null,
+    };
+    playerTransition = transition;
+    movementSuppressedUntilFreshSpeed = true;
+    movingSinceMs = null;
+    publishState();
+    transition.promise = Promise.resolve().then(() =>
+      operation(transition.abortController.signal));
+    try {
+      return await transition.promise;
+    } finally {
+      if (playerTransition === transition) {
+        playerTransition = null;
+        publishState();
+      }
+    }
+  }
+
+  function assertPlayerPreparationActive(signal) {
+    if (signal?.aborted) {
+      throw signal.reason || new Error("Voyage player preparation was cancelled");
+    }
   }
 
   async function canReuseStandalonePlayback(file, mode) {
@@ -1422,6 +1567,9 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   function assertOrdinaryVoyageCanStop() {
+    if (!currentVoyage) {
+      throw new Error("No ordinary voyage recording is active");
+    }
     if (currentVoyage?.recomputedReplay) {
       throw new Error(
         "Recomputed replay finalises automatically at verified EOF; use Finalise now only as a fallback",
@@ -1431,11 +1579,16 @@ module.exports = function ajrmMarineCapture(app) {
 
   async function startVoyage(reason, startOptions = {}) {
     await startupRecoveryPromise;
+    if (playerTransition && !startOptions.recomputedReplay) {
+      throw new Error(`Voyage player is ${playerTransition.kind}`);
+    }
     if (startVoyagePromise) return startVoyagePromise;
     if (currentVoyage) return summarizeVoyage(currentVoyage);
     if (!startOptions.recomputedReplay) {
       await cleanupStandalonePlayback({ clearSpec: true });
+      playback = idlePlaybackStatus();
     }
+    finalisation = null;
     const startOperation = performVoyageStart(reason, startOptions);
     startVoyagePromise = startOperation;
     try {
@@ -1448,8 +1601,8 @@ module.exports = function ajrmMarineCapture(app) {
   }
 
   async function performVoyageStart(reason, startOptions) {
-    if (playback.active && !startOptions.recomputedReplay) {
-      throw new Error("A recomputed replay is already active");
+    if (playbackIsBusy() && !startOptions.recomputedReplay) {
+      throw new Error("Stop the voyage player before starting a recording");
     }
     ensureDirectories();
     refreshNavigationContextFromSelfPath();
@@ -1580,7 +1733,10 @@ module.exports = function ajrmMarineCapture(app) {
 
     if (currentVoyage.recomputedReplay) {
       try {
-        await startCanonicalReplay(currentVoyage);
+        await startCanonicalReplay(
+          currentVoyage,
+          startOptions.replayPreparationSignal || null,
+        );
       } catch (error) {
         replayController?.cancel("Replay startup failed");
         replayController = null;
@@ -1619,7 +1775,7 @@ module.exports = function ajrmMarineCapture(app) {
     return summarizeVoyage(currentVoyage);
   }
 
-  async function startCanonicalReplay(voyage) {
+  async function startCanonicalReplay(voyage, preparationSignal = null) {
     playback = {
       ...idlePlaybackStatus(),
       state: "preparing",
@@ -1638,7 +1794,11 @@ module.exports = function ajrmMarineCapture(app) {
       `${voyage.id}-${randomUUID()}.jsonl`,
     );
     const parentVoyagePath = voyage.recomputedReplay.parentVoyagePath;
-    await extractCanonicalInputFromZip(parentVoyagePath, replayInputPath);
+    assertPlayerPreparationActive(preparationSignal);
+    await extractCanonicalInputFromZip(parentVoyagePath, replayInputPath, {
+      signal: preparationSignal,
+    });
+    assertPlayerPreparationActive(preparationSignal);
     voyage.replayInputPath = replayInputPath;
     const inheritedInputPath = path.join(voyage.directory, INPUT_RELATIVE_PATH);
     await fs.promises.copyFile(replayInputPath, inheritedInputPath);
@@ -1831,7 +1991,17 @@ module.exports = function ajrmMarineCapture(app) {
 
   async function stopVoyage(reason) {
     if (!currentVoyage) return lastBundle;
-    if (stoppingVoyage) return lastBundle;
+    if (stopVoyagePromise) return stopVoyagePromise;
+    const stopOperation = performVoyageStop(reason);
+    stopVoyagePromise = stopOperation;
+    try {
+      return await stopOperation;
+    } finally {
+      if (stopVoyagePromise === stopOperation) stopVoyagePromise = null;
+    }
+  }
+
+  async function performVoyageStop(reason) {
     stoppingVoyage = true;
     const voyage = currentVoyage;
     beginFinalisation(voyage);
@@ -2078,6 +2248,8 @@ module.exports = function ajrmMarineCapture(app) {
     }
     stoppingVoyage = true;
     const voyage = currentVoyage;
+    beginFinalisation(voyage);
+    finalisation.recomputationVerified = false;
     try {
       await observationWriteQueue;
       addVoyageEvent("replay-abort", reason);
@@ -2085,6 +2257,9 @@ module.exports = function ajrmMarineCapture(app) {
       if (shouldTakeSnapshot("stop")) await takeSnapshot("stop");
       replayController?.cancel(reason);
       if (replayRunPromise) await replayRunPromise;
+      updateFinalisation("closing-streams", {
+        message: "Closing partial recapture streams",
+      });
       await closeCanonicalVoyageStreams(voyage);
       const captureStop = {
         ok: true,
@@ -2128,6 +2303,11 @@ module.exports = function ajrmMarineCapture(app) {
         abortedAt: stoppedAt,
         result: replayResult,
       };
+      finalisation.streamsClosed = true;
+      finalisation.streamsClosedAt = new Date().toISOString();
+      updateFinalisation("collecting-evidence", {
+        message: "Collecting partial recapture evidence",
+      });
       await closeDrTrack(voyage, stoppedAt);
       await copyConsoleBiteReports(voyage);
       await cleanupReplayWork(voyage);
@@ -2144,7 +2324,13 @@ module.exports = function ajrmMarineCapture(app) {
             "This ZIP preserves partial evidence only and is not a completed recomputation result.",
         },
       );
+      updateFinalisation("indexing", {
+        message: "Building incomplete voyage index",
+      });
       const index = await writeVoyageIndex(voyage);
+      updateFinalisation("building-zip", {
+        message: "Building incomplete voyage ZIP",
+      });
       const bundle = await bundleVoyage(voyage, index);
       if (bundle?.format !== "zip") {
         throw new Error(
@@ -2161,6 +2347,7 @@ module.exports = function ajrmMarineCapture(app) {
       }
       currentVoyage = null;
       lastBundle = bundle;
+      finishFinalisation(bundle);
       publishNotification({
         voyageId: voyage.id,
         leaf: "abort",
@@ -2171,12 +2358,19 @@ module.exports = function ajrmMarineCapture(app) {
       addEvent("voyage-aborted", `${voyage.id}: incomplete ZIP prepared`);
       publishState();
       return bundle;
+    } catch (error) {
+      failFinalisation(error);
+      throw error;
     } finally {
       stoppingVoyage = false;
     }
   }
 
   async function closeIncompleteVoyagesOnStartup() {
+    await fs.promises.rm(path.join(options.voyageDirectory, ".replay-work"), {
+      recursive: true,
+      force: true,
+    });
     const entries = await fs.promises.readdir(options.voyageDirectory, {
       withFileTypes: true,
     }).catch(() => []);
@@ -3284,21 +3478,13 @@ module.exports = function ajrmMarineCapture(app) {
       timestamp: new Date().toISOString(),
       enabled: options.enabled,
       recordOutputs: options.recordOutputs,
-      state:
-        finalisation?.state === "running"
-          ? "finalising"
-          : playback.active
-            ? "replaying"
-          : currentVoyage
-            ? "recording"
-            : options.enabled
-              ? "watching"
-              : "disabled",
+      state: captureState(),
       speedKnots,
       sogKnots,
       stwKnots,
       voyageState,
       playback,
+      playerTransition: publicPlayerTransition(),
       movementSuppressedUntilFreshSpeed,
       autoStartInhibited,
       thresholds: {
@@ -3343,6 +3529,49 @@ module.exports = function ajrmMarineCapture(app) {
     return listVoyageBundlesInDirectory(options.voyageDirectory);
   }
 
+  function playbackIsBusy() {
+    return Boolean(
+      playerTransition ||
+      replayController ||
+      playback.active === true ||
+      ["preparing", "ready", "seeking"].includes(playback.state),
+    );
+  }
+
+  function captureState() {
+    if (finalisation?.state === "running") return "finalising";
+    if (playerTransition?.kind === "seeking" || playback.state === "seeking") {
+      return "seeking";
+    }
+    if (
+      playerTransition?.kind === "preparing" ||
+      ["preparing", "ready"].includes(playback.state)
+    ) {
+      return "preparing";
+    }
+    if (playback.active === true) return playback.paused === true ? "paused" : "replaying";
+    if (currentVoyage) return "recording";
+    return options.enabled ? "watching" : "disabled";
+  }
+
+  function publicPlayerTransition() {
+    if (!playerTransition) return null;
+    return {
+      kind: playerTransition.kind,
+      startedAt: playerTransition.startedAt,
+      cancellable: true,
+    };
+  }
+
+  function voyageFileIsInUse(fileName) {
+    if (currentVoyage?.recomputedReplay?.parentVoyage === fileName) {
+      return true;
+    }
+    return playbackIsBusy() && (
+      playback.fileName === fileName || standalonePlaybackSpec?.file === fileName
+    );
+  }
+
   function getAiSnapshotApi() {
     return app.ajrmMarineSnapshotApi || globalThis[AJRM_MARINE_SNAPSHOT_API_REGISTRY] || null;
   }
@@ -3353,22 +3582,17 @@ module.exports = function ajrmMarineCapture(app) {
       { path: "plugins.ajrmMarineCapture.enabled", value: options.enabled },
       {
         path: "plugins.ajrmMarineCapture.state",
-        value:
-          finalisation?.state === "running"
-            ? "finalising"
-            : playback.active
-              ? "replaying"
-            : currentVoyage
-              ? "recording"
-              : options.enabled
-                ? "watching"
-                : "disabled",
+        value: captureState(),
       },
       { path: "plugins.ajrmMarineCapture.speedKnots", value: speedKnots },
       { path: "plugins.ajrmMarineCapture.sogKnots", value: sogKnots },
       { path: "plugins.ajrmMarineCapture.stwKnots", value: stwKnots },
       { path: "plugins.ajrmMarineCapture.voyageState", value: voyageState },
       { path: "plugins.ajrmMarineCapture.playback", value: playback },
+      {
+        path: "plugins.ajrmMarineCapture.playerTransition",
+        value: publicPlayerTransition(),
+      },
       {
         path: "plugins.ajrmMarineCapture.review",
         value: app.ajrmMarineVoyageReviewApi?.status?.() || null,
@@ -4360,9 +4584,7 @@ async function cachedVoyageZipIndex(filePath, info) {
   if (voyageBundleMetadataJobs.has(cacheKey)) {
     return voyageBundleMetadataJobs.get(cacheKey);
   }
-  for (const key of voyageBundleMetadataCache.keys()) {
-    if (key.startsWith(`${filePath}:`)) voyageBundleMetadataCache.delete(key);
-  }
+  invalidateVoyageZipCache(filePath);
   const job = readVoyageZipIndex(filePath)
     .then((index) => {
       voyageBundleMetadataCache.set(cacheKey, index);
@@ -4373,6 +4595,12 @@ async function cachedVoyageZipIndex(filePath, info) {
     });
   voyageBundleMetadataJobs.set(cacheKey, job);
   return job;
+}
+
+function invalidateVoyageZipCache(filePath) {
+  for (const key of voyageBundleMetadataCache.keys()) {
+    if (key.startsWith(`${filePath}:`)) voyageBundleMetadataCache.delete(key);
+  }
 }
 
 async function readVoyageZipIndex(filePath) {

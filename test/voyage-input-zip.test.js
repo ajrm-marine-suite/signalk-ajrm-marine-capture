@@ -104,3 +104,18 @@ test("voyage without canonical input fails clearly", async () => {
   );
   await fs.rm(root, { recursive: true, force: true });
 });
+
+test("voyage extraction honours a cancelled preparation", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ajrm-cancelled-zip-"));
+  const controller = new AbortController();
+  controller.abort(new Error("Operator stopped preparation"));
+  await assert.rejects(
+    extractCanonicalInputFromZip(
+      path.join(root, "unused.zip"),
+      path.join(root, "replay.jsonl"),
+      { signal: controller.signal },
+    ),
+    /Operator stopped preparation/,
+  );
+  await fs.rm(root, { recursive: true, force: true });
+});
