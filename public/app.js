@@ -22,6 +22,8 @@ const elements = {
   eventValue: document.getElementById("eventValue"),
   events: document.getElementById("events"),
   voyageBundles: document.getElementById("voyageBundles"),
+  uploadVoyageBundle: document.getElementById("uploadVoyageBundle"),
+  uploadVoyageFile: document.getElementById("uploadVoyageFile"),
   downloadSelectedBundle: document.getElementById("downloadSelectedBundle"),
   deleteSelectedBundle: document.getElementById("deleteSelectedBundle"),
   selectedBundleInfo: document.getElementById("selectedBundleInfo"),
@@ -54,6 +56,7 @@ let replayPlayLatch = false;
 let latestStatus = null;
 let refreshSequence = 0;
 let appliedRefreshSequence = 0;
+let uploadInProgress = false;
 
 elements.refreshButton.addEventListener("click", refresh);
 elements.enabledToggle.addEventListener("change", () =>
@@ -103,6 +106,14 @@ elements.saveCommentButton.addEventListener("click", () =>
 );
 elements.deleteSelectedBundle.addEventListener("click", () => {
   if (selectedBundle) deleteVoyage(selectedBundle.fileName);
+});
+elements.uploadVoyageBundle.addEventListener("click", () => {
+  if (!uploadInProgress) elements.uploadVoyageFile.click();
+});
+elements.uploadVoyageFile.addEventListener("change", () => {
+  const file = elements.uploadVoyageFile.files?.[0];
+  elements.uploadVoyageFile.value = "";
+  if (file) uploadVoyage(file);
 });
 elements.downloadSelectedBundle.addEventListener("click", (event) => {
   if (elements.downloadSelectedBundle.classList.contains("disabled")) {
@@ -174,9 +185,11 @@ async function recorderCommand(action, path, body) {
 }
 
 function render(status) {
-  elements.banner.textContent = status.enabled
-    ? "Automatic voyage recording is enabled."
-    : "Automatic voyage recording is disabled.";
+  if (!uploadInProgress) {
+    elements.banner.textContent = status.enabled
+      ? "Automatic voyage recording is enabled."
+      : "Automatic voyage recording is disabled.";
+  }
   elements.enabledToggle.checked = status.enabled === true;
   elements.recordOutputsToggle.checked = status.recordOutputs === true;
   elements.recordOutputsToggle.disabled = Boolean(status.currentVoyage);
@@ -537,6 +550,7 @@ function renderVoyageBundles(voyages) {
 
 function updateSelectedBundleActions() {
   const hasSelection = Boolean(selectedBundle);
+  elements.uploadVoyageBundle.disabled = uploadInProgress;
   elements.deleteSelectedBundle.disabled = !hasSelection;
   elements.downloadSelectedBundle.classList.toggle("disabled", !hasSelection);
   elements.downloadSelectedBundle.setAttribute("aria-disabled", String(!hasSelection));
@@ -551,6 +565,64 @@ function updateSelectedBundleActions() {
     elements.downloadSelectedBundle.href = "#";
     elements.downloadSelectedBundle.removeAttribute("download");
   }
+}
+
+async function uploadVoyage(file) {
+  if (!file?.name?.toLowerCase().endsWith(".zip")) {
+    elements.banner.textContent = "Choose an AJRM voyage ZIP file.";
+    elements.banner.classList.add("error");
+    return;
+  }
+  uploadInProgress = true;
+  elements.uploadVoyageBundle.disabled = true;
+  elements.uploadVoyageBundle.textContent = "Uploading…";
+  elements.banner.classList.remove("error");
+  elements.banner.textContent = `Uploading ${file.name}…`;
+  try {
+    const result = await uploadVoyageRequest(file, (loaded, total) => {
+      const progress = total > 0 ? ` ${Math.min(100, loaded / total * 100).toFixed(1)}%` : "";
+      elements.banner.textContent = `Uploading ${file.name}…${progress}`;
+    });
+    await refresh();
+    selectedBundle = latestStatus?.voyages?.find(
+      (voyage) => voyage.fileName === result.uploaded?.fileName,
+    ) || result.uploaded || null;
+    renderVoyageBundles(latestStatus?.voyages || []);
+    if (latestStatus) renderReplayRecorder(latestStatus);
+    elements.banner.textContent = `${file.name} uploaded and selected.`;
+  } catch (error) {
+    elements.banner.textContent = error.message || "Voyage upload failed";
+    elements.banner.classList.add("error");
+  } finally {
+    uploadInProgress = false;
+    elements.uploadVoyageBundle.disabled = false;
+    elements.uploadVoyageBundle.textContent = "Upload";
+  }
+}
+
+function uploadVoyageRequest(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API}/voyages/upload?file=${encodeURIComponent(file.name)}`);
+    request.setRequestHeader("Content-Type", "application/zip");
+    request.upload.addEventListener("progress", (event) => {
+      onProgress?.(event.loaded, event.lengthComputable ? event.total : file.size);
+    });
+    request.addEventListener("load", () => {
+      let result = {};
+      try {
+        result = JSON.parse(request.responseText || "{}");
+      } catch (_error) {}
+      if (request.status < 200 || request.status >= 300 || !result.ok) {
+        reject(new Error(result.error || `Upload failed: HTTP ${request.status}`));
+        return;
+      }
+      resolve(result);
+    });
+    request.addEventListener("error", () => reject(new Error("Voyage upload connection failed")));
+    request.addEventListener("abort", () => reject(new Error("Voyage upload was cancelled")));
+    request.send(file);
+  });
 }
 
 async function deleteVoyage(fileName) {

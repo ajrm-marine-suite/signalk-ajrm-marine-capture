@@ -7,8 +7,9 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.10.7` provides one voyage player for saved-result playback,
-fresh calculation from recorded inputs, and lineage-preserving recapture.
+Version `0.10.8` adds streamed voyage ZIP upload for moving recordings between
+Signal K systems, alongside saved-result playback, fresh calculation from
+recorded inputs, and lineage-preserving recapture.
 
 ## The simple data model
 
@@ -207,12 +208,17 @@ Suite plugins can use the equivalent in-process
 
 Voyage ZIPs are built as disk-backed streams and downloaded through the
 browser's native streaming path rather than a whole-file JavaScript blob.
+The Voyage bundles panel also has an **Upload** button. It streams a selected
+AJRM voyage ZIP directly into the configured voyage directory, validates the
+archive and root manifest, preserves the original filename, and selects the
+newly uploaded voyage. Upload never replaces an existing file with the same
+name and honours Capture's configured minimum-free-disk reserve.
 
 ## Install
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.7 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.8 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

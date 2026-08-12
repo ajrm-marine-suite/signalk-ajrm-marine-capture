@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AJRM Marine Voyages</title>
-    <link rel="stylesheet" href="./styles.css?v=0.10.7" />
+    <link rel="stylesheet" href="./styles.css?v=0.10.8" />
   </head>
   <body>
     <main>
@@ -114,6 +114,8 @@
       <section class="panel">
         <h2>Voyage bundles</h2>
         <div class="selected-bundle-actions" aria-label="Selected voyage bundle actions">
+          <button id="uploadVoyageBundle" class="secondary" type="button">Upload</button>
+          <input id="uploadVoyageFile" type="file" accept=".zip,application/zip" hidden>
           <a id="downloadSelectedBundle" class="download-button disabled" href="#" download aria-disabled="true">Download</a>
           <button id="deleteSelectedBundle" class="delete-button" type="button" disabled>Delete</button>
         </div>
@@ -121,6 +123,6 @@
         <div id="voyageBundles" class="bundle-list"></div>
       </section>
     </main>
-    <script src="./app.js?v=0.10.7"></script>
+    <script src="./app.js?v=0.10.8"></script>
   </body>
 </html>

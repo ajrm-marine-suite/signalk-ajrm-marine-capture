@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AJRM Marine Voyages",
-    "version": "0.10.7",
+    "version": "0.10.8",
     "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {
@@ -11,6 +11,14 @@
     },
     "/voyages": {
       "get": { "summary": "List current canonical voyage bundles", "responses": { "200": { "description": "Voyage list" } } }
+    },
+    "/voyages/upload": {
+      "post": {
+        "summary": "Stream an AJRM voyage ZIP into local voyage storage without overwriting an existing bundle",
+        "parameters": [{ "name": "file", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/zip": { "schema": { "type": "string", "format": "binary" } } } },
+        "responses": { "201": { "description": "Voyage uploaded" }, "400": { "description": "Invalid voyage ZIP" }, "409": { "description": "Voyage already exists" }, "413": { "description": "Voyage exceeds available storage allowance" } }
+      }
     },
     "/voyages/{file}/download": {
       "get": {

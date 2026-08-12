@@ -10,6 +10,7 @@ const readline = require("node:readline");
 const zlib = require("node:zlib");
 const { randomUUID } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
+const { Transform } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const AdmZip = require("adm-zip");
 const { ZipArchive } = require("archiver");
@@ -327,6 +328,49 @@ module.exports = function ajrmMarineCapture(app) {
         res.json({ ok: true, voyages: await listVoyageBundles() });
       } catch (error) {
         res.status(500).json({ ok: false, error: error.message });
+      }
+    });
+
+    router.post("/voyages/upload", async (req, res) => {
+      try {
+        const fileName = normalizeVoyageUploadFileName(req.query?.file);
+        const uploadDisk = await readDiskStatus(options.voyageDirectory);
+        const reservedBytes = options.minFreeDiskGb * 1024 * 1024 * 1024;
+        const maximumBytes = Math.floor(uploadDisk.availableBytes - reservedBytes);
+        if (maximumBytes <= 0) {
+          throw httpError(507, "Not enough free disk space to upload a voyage");
+        }
+        const declaredBytes = Number(req.headers["content-length"]);
+        if (Number.isFinite(declaredBytes) && declaredBytes > maximumBytes) {
+          throw httpError(
+            413,
+            "The voyage is larger than the available space after the configured disk reserve",
+          );
+        }
+        const uploaded = await storeUploadedVoyage({
+          input: req,
+          fileName,
+          voyageDirectory: options.voyageDirectory,
+          maximumBytes,
+        });
+        invalidateVoyageZipCache(uploaded.path);
+        addEvent("voyage-uploaded", `${uploaded.fileName} (${uploaded.bytes} bytes)`);
+        publishState();
+        const voyages = await listVoyageBundles();
+        res.status(201).json({
+          ok: true,
+          uploaded: voyages.find((item) => item.fileName === uploaded.fileName) || {
+            fileName: uploaded.fileName,
+            bytes: uploaded.bytes,
+          },
+        });
+      } catch (error) {
+        const status = Number(error?.statusCode) || 400;
+        if (status >= 500) logError("voyage upload failed", error);
+        res.status(status).json({
+          ok: false,
+          error: error?.message || "Voyage upload failed",
+        });
       }
     });
 
@@ -5035,6 +5079,131 @@ function safeBaseName(value) {
   return path.basename(String(value || ""));
 }
 
+function normalizeVoyageUploadFileName(value) {
+  const requested = String(value || "").trim();
+  if (
+    !requested ||
+    path.basename(requested) !== requested ||
+    !/^voyage-[A-Za-z0-9][A-Za-z0-9._-]*\.zip$/i.test(requested)
+  ) {
+    throw httpError(400, "Choose an AJRM voyage ZIP whose name starts with voyage-");
+  }
+  return requested;
+}
+
+async function storeUploadedVoyage({
+  input,
+  fileName,
+  voyageDirectory,
+  maximumBytes = Number.MAX_SAFE_INTEGER,
+}) {
+  const normalizedName = normalizeVoyageUploadFileName(fileName);
+  await fs.promises.mkdir(voyageDirectory, { recursive: true });
+  const targetPath = path.join(voyageDirectory, normalizedName);
+  const existing = await fs.promises.stat(targetPath).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existing) {
+    throw httpError(409, `${normalizedName} already exists; it was not overwritten`);
+  }
+  const temporaryPath = path.join(
+    voyageDirectory,
+    `.${normalizedName}.${randomUUID()}.upload`,
+  );
+  let bytes = 0;
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      if (bytes > maximumBytes) {
+        callback(httpError(413, "Voyage upload exceeded the available disk-space allowance"));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(
+      input,
+      limiter,
+      fs.createWriteStream(temporaryPath, { flags: "wx" }),
+    );
+    if (bytes === 0) throw httpError(400, "The uploaded voyage file is empty");
+    await validateUploadedVoyageZip(temporaryPath);
+    const index = await readVoyageZipIndex(temporaryPath);
+    if (!index || typeof index !== "object" || Array.isArray(index)) {
+      throw httpError(400, "The ZIP does not contain a valid root index.json voyage manifest");
+    }
+    try {
+      await fs.promises.link(temporaryPath, targetPath);
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        throw httpError(409, `${normalizedName} already exists; it was not overwritten`);
+      }
+      throw error;
+    }
+    return { fileName: normalizedName, path: targetPath, bytes, index };
+  } finally {
+    await fs.promises.rm(temporaryPath, { force: true }).catch(() => {});
+  }
+}
+
+async function validateUploadedVoyageZip(filePath) {
+  await new Promise((resolve, reject) => {
+    yauzl.open(filePath, { lazyEntries: true, autoClose: true }, (openError, zip) => {
+      if (openError || !zip) {
+        reject(httpError(400, "The uploaded file is not a readable ZIP archive"));
+        return;
+      }
+      let entries = 0;
+      let rootIndexFound = false;
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        zip.close();
+        if (error) reject(error);
+        else resolve();
+      };
+      zip.once("error", () => finish(httpError(400, "The uploaded ZIP is damaged")));
+      zip.once("end", () => {
+        if (!entries) finish(httpError(400, "The uploaded ZIP contains no files"));
+        else if (!rootIndexFound) {
+          finish(httpError(400, "The ZIP is not an AJRM voyage: root index.json is missing"));
+        } else finish();
+      });
+      zip.on("entry", (entry) => {
+        entries += 1;
+        const entryName = String(entry.fileName || "");
+        const parts = entryName.split("/");
+        if (
+          entries > 100000 ||
+          !entryName ||
+          entryName.includes("\\") ||
+          entryName.includes("\0") ||
+          entryName.startsWith("/") ||
+          /^[A-Za-z]:/.test(entryName) ||
+          parts.includes("..") ||
+          (entry.generalPurposeBitFlag & 0x1) !== 0 ||
+          ((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000
+        ) {
+          finish(httpError(400, "The voyage ZIP contains an unsafe or unsupported entry"));
+          return;
+        }
+        if (entryName === "index.json" && !/\/$/.test(entryName)) rootIndexFound = true;
+        zip.readEntry();
+      });
+      zip.readEntry();
+    });
+  });
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 function prefixedRouter(router, prefix) {
   const mount = (method) => (route, ...handlers) =>
     router[method](`${prefix}${route}`, ...handlers);
@@ -5110,6 +5279,7 @@ module.exports._private = {
   recomputedReplayVerification,
   resetMovementGateForVoyageStart,
   sanitizeRouteSelection,
+  storeUploadedVoyage,
   sourceBelongsToPlugin,
   speedKnotsFromMps,
   writeDirectoryZip,

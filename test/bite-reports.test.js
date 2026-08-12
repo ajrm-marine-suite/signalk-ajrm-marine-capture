@@ -18,6 +18,7 @@ test("Capture describes its HTTP routes with a versioned OpenAPI document", () =
   assert.equal(document.info.version, packageInfo.version);
   assert.ok(document.paths["/voyage/replay/start"].post);
   assert.ok(document.paths["/voyages/{file}/download"].get);
+  assert.ok(document.paths["/voyages/upload"].post);
 });
 
 test("Capture bundles voyage-window Console BITE reports for offline debugging", () => {

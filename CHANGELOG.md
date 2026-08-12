@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.8
+
+- Add an Upload control to the Voyage bundles panel for transferring AJRM
+  voyage ZIPs from another browser device or Signal K system.
+- Stream uploads directly to disk with progress feedback, preserve the original
+  filename, validate the ZIP and root voyage manifest, and select the uploaded
+  voyage immediately.
+- Reject unsafe archives, incomplete uploads, duplicate filenames and uploads
+  that would consume Capture's configured minimum-free-disk reserve.
+
 ## 0.10.7
 
 - Apply the minimum effective replay ratio only after ten seconds of source
