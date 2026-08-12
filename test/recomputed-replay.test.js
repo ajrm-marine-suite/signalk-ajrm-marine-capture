@@ -293,6 +293,19 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
   parentZip.writeZip(path.join(voyageDirectory, parentFileName));
 
   const app = fakeApp({ echoHandledDeltas: true });
+  app.ajrmMarineCaptureTestHooks = {
+    async afterReplayInputPrepared() {
+      // This represents retained live state arriving while a recapture is
+      // preparing. It must not become a pre-roll in the saved result stream.
+      app.signalk.emit("delta", {
+        context: "vessels.self",
+        updates: [{
+          $source: "stale-live-source",
+          values: [{ path: "navigation.speedOverGround", value: 0 }],
+        }],
+      });
+    },
+  };
   const routes = new Map();
   const plugin = createPlugin(app);
   plugin.registerWithRouter(routerMap(routes));
@@ -352,12 +365,30 @@ test("Capture replays canonical input at fixed 1x and automatically builds a ver
       "end of canonical input",
     );
     assert.equal(index.recomputedOutput.complete, true);
+    assert.equal(index.recomputedOutput.streamComplete, true);
+    assert.equal(index.recomputedOutput.coverageComplete, true);
     assert.equal(index.recomputedOutput.records, 3);
     assert.equal(index.recomputedOutput.origin, "recaptured");
+    assert.equal(index.recomputedOutput.timingBasis, "replay-source-elapsed");
     assert.equal(index.canonicalInput.complete, true);
     assert.equal(index.canonicalInput.inheritedFrom, parentFileName);
     assert.ok(zip.getEntry(INPUT_RELATIVE_PATH));
     assert.ok(zip.getEntry(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH));
+    const outputRecords = zlib
+      .gunzipSync(zip.getEntry(RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH).getData())
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.deepEqual(
+      outputRecords.map((record) => record.elapsedMs),
+      [0, 2000, 4000],
+    );
+    assert.equal(
+      outputRecords.some((record) => record.delta.updates?.some((update) =>
+        update.$source === "stale-live-source")),
+      false,
+    );
     const checkpoint = JSON.parse(
       zip.readAsText("system/recomputed-replay-completion.json"),
     );
@@ -660,6 +691,9 @@ test("stopping an active recapture reports and packages an unverified partial re
     assert.equal(index.recomputationVerified, false);
     assert.equal(index.recomputedReplay.verified, false);
     assert.equal(index.recomputedReplay.aborted, true);
+    assert.equal(index.recomputedOutput.complete, false);
+    assert.equal(index.recomputedOutput.streamComplete, false);
+    assert.equal(index.recomputedOutput.coverageComplete, false);
   } finally {
     await plugin.stop();
     await fs.rm(root, { recursive: true, force: true });

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.9
+
+- Start recaptured calculated-output recording only after the parent voyage has
+  been extracted and the first canonical replay input is ready, preventing
+  stale GPS-loss and zero-speed state from becoming saved-result pre-roll.
+- Timestamp recaptured output on canonical replay source time rather than ZIP
+  preparation wall time, so saved results remain aligned with their inputs.
+- Distinguish a cleanly closed result stream from complete replay coverage;
+  interrupted recaptures now explicitly retain incomplete output coverage.
+
 ## 0.10.8
 
 - Add an Upload control to the Voyage bundles panel for transferring AJRM

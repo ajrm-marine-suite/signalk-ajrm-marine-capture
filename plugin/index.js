@@ -812,6 +812,15 @@ module.exports = function ajrmMarineCapture(app) {
     const voyage = currentVoyage;
     if (!voyage || stoppingVoyage) return;
     if (voyage.recomputedOutputStream) {
+      // A recapture exists before its parent input has necessarily been
+      // extracted and replayed.  Ignore ambient Signal K traffic until the
+      // replay controller is about to emit its first canonical input record.
+      // Otherwise a large parent ZIP creates a stale pre-roll in the saved
+      // result stream.
+      if (
+        voyage.recomputedReplay &&
+        voyage.replayOutputCaptureActive !== true
+      ) return;
       const deltaSource = String(delta?.$source || delta?.source?.label || "");
       const updates = Array.isArray(delta?.updates) ? delta.updates : [];
       const captureOwned = updates.length > 0
@@ -824,10 +833,15 @@ module.exports = function ajrmMarineCapture(app) {
         : sourceBelongsToPlugin(deltaSource, plugin.id);
       if (!captureOwned) {
         const capturedAt = new Date().toISOString();
-        const elapsedMs = Math.max(
-          voyage.lastOutputElapsedMs || 0,
-          Math.round(performance.now() - voyage.monotonicStartedAtMs),
-        );
+        const elapsedMs = voyage.recomputedReplay
+          ? Math.max(
+              voyage.lastOutputElapsedMs || 0,
+              Math.round(Number(voyage.replayOutputElapsedMs) || 0),
+            )
+          : Math.max(
+              voyage.lastOutputElapsedMs || 0,
+              Math.round(performance.now() - voyage.monotonicStartedAtMs),
+            );
         voyage.lastOutputElapsedMs = elapsedMs;
         writeVoyageStreamRecord(
           voyage,
@@ -838,9 +852,7 @@ module.exports = function ajrmMarineCapture(app) {
             schemaVersion: 1,
             elapsedMs,
             capturedAt,
-            replaySourceElapsedMs: voyage.recomputedReplay
-              ? playback.sourceElapsedMs || 0
-              : null,
+            replaySourceElapsedMs: voyage.recomputedReplay ? elapsedMs : null,
             delta,
           },
         );
@@ -1724,6 +1736,9 @@ module.exports = function ajrmMarineCapture(app) {
             fileName: RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
             compression: "gzip",
             origin: startOptions.recomputedReplay ? "recaptured" : "live",
+            timingBasis: startOptions.recomputedReplay
+              ? "replay-source-elapsed"
+              : "recording-monotonic-elapsed",
             records: 0,
             bytes: 0,
             uncompressedBytes: 0,
@@ -1764,7 +1779,7 @@ module.exports = function ajrmMarineCapture(app) {
     currentVoyage.drTrackStream = fs.createWriteStream(path.join(directory, DR_TRACK_RELATIVE_PATH), {
       flags: "a",
     });
-    if (currentVoyage.recomputedOutput) {
+    if (currentVoyage.recomputedOutput && !currentVoyage.recomputedReplay) {
       openRecomputedOutputStream(currentVoyage);
     }
     if (!currentVoyage.recomputedReplay) {
@@ -1863,6 +1878,21 @@ module.exports = function ajrmMarineCapture(app) {
       inheritedFrom: voyage.recomputedReplay?.parentVoyage || null,
     };
     delete voyage.recomputedReplay.parentVoyagePath;
+    if (
+      typeof app.ajrmMarineCaptureTestHooks?.afterReplayInputPrepared ===
+      "function"
+    ) {
+      await app.ajrmMarineCaptureTestHooks.afterReplayInputPrepared({
+        voyageId: voyage.id,
+      });
+    }
+    // Open the result stream only after extraction and inheritance are done.
+    // The separate capture gate remains closed until the first replay record
+    // is emitted, excluding route restoration and other preparation traffic.
+    openRecomputedOutputStream(voyage);
+    voyage.replayOutputCaptureActive = false;
+    voyage.replayOutputElapsedMs = 0;
+    voyage.replayFirstInputElapsedMs = 0;
     movementSuppressedUntilFreshSpeed = true;
     movingSinceMs = null;
     voyage.replayWarmupActive = true;
@@ -1893,7 +1923,14 @@ module.exports = function ajrmMarineCapture(app) {
     replayController = createReplayController({
       filePath: replayInputPath,
       maximumLagMs: options.replayMaximumLagSeconds * 1000,
-      emitDelta(delta) {
+      emitDelta(delta, record) {
+        const recordElapsedMs = Number(record?.elapsedMs);
+        voyage.replayOutputElapsedMs = Number.isFinite(recordElapsedMs)
+          ? Math.max(0, recordElapsedMs - voyage.replayFirstInputElapsedMs)
+          : Math.max(0, Number(playback.sourceElapsedMs) || 0);
+        // Set this before handleMessage so synchronous Signal K/plugin output
+        // caused by the first replay delta is retained at source elapsed zero.
+        voyage.replayOutputCaptureActive = true;
         app.handleMessage(plugin.id, delta);
         if (
           (delta.updates || []).some((update) =>
@@ -1924,6 +1961,9 @@ module.exports = function ajrmMarineCapture(app) {
           lastReplayStatusPublishMs = now;
           publishState();
         }
+      },
+      onPrepared(input) {
+        voyage.replayFirstInputElapsedMs = Number(input.firstElapsedMs) || 0;
       },
     });
     replayRunPromise = replayController.run()
@@ -2015,9 +2055,26 @@ module.exports = function ajrmMarineCapture(app) {
           voyage[statusField].bytes = outputInfo.size;
         }
         voyage[statusField].closedAt = new Date().toISOString();
-        voyage[statusField].complete =
+        const streamComplete =
           voyage[statusField].writeErrors === 0 &&
           (statusField !== "recomputedOutput" || voyage[statusField].records > 0);
+        if (statusField === "recomputedOutput") {
+          const coverageComplete = !voyage.recomputedReplay || (
+            playback.state === "complete" &&
+            playback.complete === true &&
+            playback.valid === true &&
+            Number(playback.recordsReplayed) === Number(playback.recordsTotal)
+          );
+          voyage[statusField].streamComplete = streamComplete;
+          voyage[statusField].coverageComplete = coverageComplete;
+          // Preserve `complete` as the historical stream-integrity field so a
+          // deliberately stopped partial result remains playable evidence.
+          // Consumers use coverageComplete/recomputedReplay.incomplete to
+          // distinguish it from a full-voyage recomputation.
+          voyage[statusField].complete = streamComplete;
+        } else {
+          voyage[statusField].complete = streamComplete;
+        }
       }
     }
   }
