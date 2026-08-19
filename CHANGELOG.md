@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.10
+
+- Ship a package-root 120-pixel PNG icon so AJRM Marine Voyages is identified
+  correctly on the Signal K Webapps page.
+
 ## 0.10.9
 
 - Start recaptured calculated-output recording only after the parent voyage has
