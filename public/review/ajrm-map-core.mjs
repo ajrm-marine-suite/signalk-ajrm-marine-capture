@@ -5,7 +5,7 @@
  */
 
 export const MAP_CORE_CONTRACT = "ajrm-marine-map-shell-v1";
-export const MAP_CORE_VERSION = "0.7.9";
+export const MAP_CORE_VERSION = "0.7.11";
 export const AUTO_CHARTS_NAME = "Auto Charts";
 export const OPEN_SEA_MAP_NAME = "OpenSeaMap";
 export const CHART_FOLDER_API_BASE = "/plugins/signalk-charts-provider-simple";

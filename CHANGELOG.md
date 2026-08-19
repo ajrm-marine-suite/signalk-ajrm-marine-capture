@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.15
+
+- Update Voyage Review to shared map shell 0.7.11 so its centred chart-cycle
+  banner has a wider responsive text area.
+
 ## 0.10.14
 
 - Preserve the shared chart controller's intentional empty selection so the
