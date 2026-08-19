@@ -22,7 +22,7 @@ test("map page uses the standard left-side controls with zoom first", async () =
     readFile(new URL("../public/review/styles.css", import.meta.url), "utf8"),
   ]);
   assert.match(html, /ajrm-map-core\.css\?v=0\.7\.9/);
-  assert.match(html, /type="module" src="\.\/app\.js\?v=0\.10\.13"/);
+  assert.match(html, /type="module" src="\.\/app\.js\?v=0\.10\.14"/);
   assert.match(html, /id="chartCycleStatus" class="ajrm-map-chart-cycle-status"[^>]+hidden/);
   assert.match(html, /<header class="topbar" hidden>/);
   assert.match(html, /id="toggleVoyages"[^>]+aria-pressed="false"/);
@@ -40,6 +40,8 @@ test("map page uses the standard left-side controls with zoom first", async () =
   assert.match(app, /L\.map\(elements\.map, \{ zoomControl: true \}\)/);
   assert.match(app, /MapCore\.createChartSelectorControl/);
   assert.match(app, /MapCore\.createChartCycleControl/);
+	assert.match(app, /chartCycle\s*\?\s*chartCycle\.choose\(autoChartList, map\)\s*:\s*MapCore\.chooseChart/);
+	assert.doesNotMatch(app, /chartCycle\?\.choose\([^\n]+\)\s*\?\?/);
 	assert.match(app, /isEnabled:\s*\(\)\s*=>\s*map\.hasLayer\(autoChartGroup\)/);
   assert.match(app, /MapCore\.labelLeafletZoomControls\(map\)/);
   assert.match(app, /statusElement:\s*elements\.chartCycleStatus/);

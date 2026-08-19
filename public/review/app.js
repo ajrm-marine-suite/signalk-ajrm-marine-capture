@@ -353,7 +353,9 @@ function makeAutoChartFallbackLayer() {
 }
 
 function chooseAutoChart() {
-  return map ? (chartCycle?.choose(autoChartList, map) ?? MapCore.chooseChart(autoChartList, map)) : null;
+  return map ? (chartCycle
+    ? chartCycle.choose(autoChartList, map)
+    : MapCore.chooseChart(autoChartList, map)) : null;
 }
 
 function updateAutoChart() {

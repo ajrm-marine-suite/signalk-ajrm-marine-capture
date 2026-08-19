@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.14
+
+- Preserve the shared chart controller's intentional empty selection so the
+  Voyage Review chart cycle genuinely exposes the basemap-only step.
+
 ## 0.10.13
 
 - Update Voyage Review to shared map shell 0.7.9 so chart cycling includes an
