@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.13
+
+- Update Voyage Review to shared map shell 0.7.9 so chart cycling includes an
+  explicit basemap-only step before returning to automatic selection.
+
 ## 0.10.12
 
 - Package the Webapps icon at both Signal K consumer locations: the npm root

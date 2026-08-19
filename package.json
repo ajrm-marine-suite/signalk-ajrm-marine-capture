@@ -1,6 +1,6 @@
 {
   "name": "signalk-ajrm-marine-capture",
-  "version": "0.10.12",
+  "version": "0.10.13",
   "description": "Canonical voyage recorder, fixed-rate replay, review, and diagnostic bundle builder for AJRM Marine Suite testing.",
   "main": "plugin/index.js",
   "scripts": {
@@ -53,6 +53,6 @@
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "@ajrm-marine/map-core": "github:ajrm-marine-suite/ajrm-marine-map-core#v0.7.3"
+    "@ajrm-marine/map-core": "github:ajrm-marine-suite/ajrm-marine-map-core#v0.7.9"
   }
 }

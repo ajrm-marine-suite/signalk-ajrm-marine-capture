@@ -2,7 +2,7 @@
  * Implements the app responsibilities of the AJRM Marine Voyages browser application.
  */
 
-import * as MapCore from "./ajrm-map-core.mjs?v=0.7.3";
+import * as MapCore from "./ajrm-map-core.mjs?v=0.7.9";
 
 const apiBase = "/plugins/signalk-ajrm-marine-capture/review";
 const elements = {

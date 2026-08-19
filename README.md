@@ -7,7 +7,8 @@ AJRM Marine Capture is the single AJRM Marine voyage recorder, replay
 engine, reviewer, evidence collector, and ZIP builder. It replaces AJRM Marine
 Logger and includes the former Voyage Viewer.
 
-Version `0.10.12` packages the Webapps icon for both Signal K consumers: the
+Version `0.10.13` updates Voyage Review to shared map shell 0.7.9, including a
+basemap-only step in chart cycling. Version `0.10.12` packages the Webapps icon for both Signal K consumers: the
 App Store package root and installed webapp public URL. It retains replay source-time alignment and
 excludes stale Signal K state emitted while a parent voyage is being prepared.
 It retains streamed upload, saved-result playback, fresh calculation from
@@ -220,7 +221,7 @@ name and honours Capture's configured minimum-free-disk reserve.
 
 ```bash
 cd ~/.signalk
-npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.12 --omit=dev --no-package-lock
+npm install git+https://github.com/ajrm-marine-suite/signalk-ajrm-marine-capture.git#v0.10.13 --omit=dev --no-package-lock
 sudo systemctl restart signalk
 ```
 

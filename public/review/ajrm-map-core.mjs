@@ -5,7 +5,7 @@
  */
 
 export const MAP_CORE_CONTRACT = "ajrm-marine-map-shell-v1";
-export const MAP_CORE_VERSION = "0.7.3";
+export const MAP_CORE_VERSION = "0.7.9";
 export const AUTO_CHARTS_NAME = "Auto Charts";
 export const OPEN_SEA_MAP_NAME = "OpenSeaMap";
 export const CHART_FOLDER_API_BASE = "/plugins/signalk-charts-provider-simple";
@@ -293,6 +293,7 @@ export function chartDisplayName(chart) {
 export function chartCycleResultMessage(result) {
 	if (result?.mode === "disabled") return "Auto Charts is switched off";
 	if (result?.mode === "empty") return "No enabled chart covers the map centre";
+	if (result?.mode === "none") return "No Auto chart — basemap shown";
 	if (result?.mode === "auto") return `Automatic chart: ${chartDisplayName(result.chart)}`;
 	if (result?.mode === "manual") {
 		return `Chart ${result.index} of ${result.total}: ${chartDisplayName(result.chart)}`;
@@ -300,7 +301,8 @@ export function chartCycleResultMessage(result) {
 	return "Chart selection unavailable";
 }
 
-export function chartCycleStatusMessage({ selected, candidates = [], manualChartId = null }) {
+export function chartCycleStatusMessage({ selected, candidates = [], manualChartId = null, basemapOnly = false }) {
+	if (basemapOnly) return chartCycleResultMessage({ mode: "none" });
 	if (!selected) return chartCycleResultMessage({ mode: "empty" });
 	if (!manualChartId) return chartCycleResultMessage({ mode: "auto", chart: selected });
 	const index = candidates.findIndex((chart) => chartId(chart) === manualChartId);
@@ -404,6 +406,8 @@ export function createChartCycleControl({
 	statusDurationMs = 3500,
 }) {
 	const state = createChartCycleState();
+	let basemapOnly = false;
+	let previouslyEnabled = isEnabled() !== false;
 	let button;
 	let statusTimer = null;
 	const showStatus = (selected, candidates) => {
@@ -412,6 +416,7 @@ export function createChartCycleControl({
 			selected,
 			candidates,
 			manualChartId: state.manualChartId,
+			basemapOnly,
 		});
 		statusElement.hidden = false;
 		if (statusTimer != null) cancelSchedule?.(statusTimer);
@@ -422,28 +427,54 @@ export function createChartCycleControl({
 	const syncButton = () => {
 		if (!button) return;
 		const enabled = isEnabled() !== false;
+		if (enabled && !previouslyEnabled) {
+			state.reset();
+			basemapOnly = false;
+		}
+		previouslyEnabled = enabled;
 		const candidates = state.getCandidates(getCharts(), map);
-		button.disabled = !enabled || candidates.length < 2;
+		button.disabled = !enabled || candidates.length < 1;
 		const shortcut = chartCycleShortcut(storage);
 		const help = !enabled
 			? "Turn on Auto Charts to cycle charts"
-			: candidates.length < 2
-			? "No overlapping charts to cycle"
+			: candidates.length < 1
+			? "No chart covers the map centre"
+			: basemapOnly
+				? `Cycle charts [${shortcut}] (Basemap only)`
 			: state.manualChartId
-				? `Cycle overlapping charts [${shortcut}] (${candidates.findIndex((chart) => chartId(chart) === state.manualChartId) + 1} of ${candidates.length})`
-				: `Cycle overlapping charts [${shortcut}] (Auto, ${candidates.length} available)`;
+				? `Cycle charts [${shortcut}] (${candidates.findIndex((chart) => chartId(chart) === state.manualChartId) + 1} of ${candidates.length}, plus basemap)`
+				: `Cycle charts [${shortcut}] (Auto, ${candidates.length} available, plus basemap)`;
 		setMapControlHoverHelp(button, help);
 		button.setAttribute("aria-label", help);
 	};
-	const cycle = () => {
+	const cycleSelection = (charts, targetMap, positionValue) => {
 		if (isEnabled() === false) return null;
-		const candidates = state.getCandidates(getCharts(), map);
-		if (candidates.length < 2) return null;
-		const selected = state.cycle(getCharts(), map);
+		const candidates = state.getCandidates(charts, targetMap, positionValue);
+		if (candidates.length < 1) return null;
+		let selected;
+		if (basemapOnly) {
+			basemapOnly = false;
+			state.reset();
+			selected = state.choose(charts, targetMap, positionValue);
+		} else {
+			const currentManualIndex = state.manualChartId
+				? candidates.findIndex((chart) => chartId(chart) === state.manualChartId)
+				: -1;
+			if (candidates.length === 1 || currentManualIndex === candidates.length - 1) {
+				state.reset();
+				basemapOnly = true;
+				selected = null;
+			} else {
+				selected = state.cycle(charts, targetMap, positionValue);
+			}
+		}
 		syncButton();
 		onChange();
 		showStatus(selected, candidates);
-		return selected;
+		return { selected, basemapOnly };
+	};
+	const cycle = () => {
+		return cycleSelection(getCharts(), map);
 	};
 	const keydownHandler = (event) => {
 		if (!isChartCycleShortcutEvent(event, storage)) return;
@@ -482,23 +513,24 @@ export function createChartCycleControl({
 			return this;
 		},
 		choose(charts = getCharts(), targetMap = map, positionValue) {
-			const selected = state.choose(charts, targetMap, positionValue);
+			const selected = basemapOnly ? null : state.choose(charts, targetMap, positionValue);
 			syncButton();
 			return selected;
 		},
 		cycle(charts = getCharts(), targetMap = map, positionValue) {
-			if (isEnabled() === false) return null;
-			const selected = state.cycle(charts, targetMap, positionValue);
-			syncButton();
-			return selected;
+			return cycleSelection(charts, targetMap, positionValue)?.selected ?? null;
 		},
 		reset() {
 			state.reset();
+			basemapOnly = false;
 			syncButton();
 		},
 		update: syncButton,
 		get manualChartId() {
 			return state.manualChartId;
+		},
+		get isBasemapOnly() {
+			return basemapOnly;
 		},
 	};
 }
@@ -738,9 +770,13 @@ export function createChartSelectorControl({
 					}
 					return;
 				}
+				const foldersWereOpen = panel.querySelector("[data-folders]")?.open === true;
 				if (input.type === "radio") setBaseMap(input.value);
 				else overlays.find((item) => item.name === input.value)?.setEnabled(input.checked);
 				renderPanel();
+				const folderDetails = panel.querySelector("[data-folders]");
+				if (folderDetails) folderDetails.open = foldersWereOpen;
+				await refreshFolders();
 			};
 			panel.addEventListener("change", changeHandler);
 			mapClickHandler = () => {
