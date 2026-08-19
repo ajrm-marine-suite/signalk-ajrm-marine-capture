@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.11
+
+- Serve the Webapps icon from the webapp's public URL and verify the declared
+  `appIcon` resolves to a packaged, non-empty file.
+
 ## 0.10.10
 
 - Ship a package-root 120-pixel PNG icon so AJRM Marine Voyages is identified

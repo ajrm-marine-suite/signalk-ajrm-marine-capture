@@ -35,7 +35,7 @@ test("Recorder command failures keep the error visible while clearing pending st
 });
 
 test("UI exposes one explicit player with saved-result and recapture modes", () => {
-  assert.match(htmlSource, /app\.js\?v=0\.10\.10/);
+  assert.match(htmlSource, /app\.js\?v=0\.10\.11/);
   assert.match(htmlSource, /id="recordOutputsToggle"/);
   assert.match(htmlSource, /Record calculated results as well as sensor inputs/);
   assert.match(htmlSource, /id="useSavedResultsToggle"/);
