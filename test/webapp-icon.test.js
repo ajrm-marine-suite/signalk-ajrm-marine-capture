@@ -8,6 +8,7 @@ test("appIcon resolves inside the served public directory", () => {
   const packageInfo = require("../package.json");
   const iconUrl = packageInfo.signalk?.appIcon;
   assert.match(iconUrl, /^\.\/[A-Za-z0-9._-]+$/);
+  assert.ok(fs.statSync(path.join(__dirname, "..", iconUrl)).size > 0);
   const iconPath = path.join(__dirname, "..", "public", iconUrl.slice(2));
   assert.ok(fs.statSync(iconPath).size > 0, `${iconPath} must be a non-empty file`);
 });

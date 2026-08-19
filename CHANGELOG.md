@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.12
+
+- Package the Webapps icon at both Signal K consumer locations: the npm root
+  for App Store metadata and `public/` for the installed Webapps catalogue.
+- Verify both icon files through the package regression test.
+
 ## 0.10.11
 
 - Serve the Webapps icon from the webapp's public URL and verify the declared
