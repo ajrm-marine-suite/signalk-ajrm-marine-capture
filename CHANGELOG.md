@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.16
+
+- Makes `input/sensor-input.jsonl` the sole replayable voyage-input model;
+  older layouts must be converted before playback.
+- Ignores local dependency and package archives in Git working trees.
+
 ## 0.10.15
 
 - Update Voyage Review to shared map shell 0.7.11 so its centred chart-cycle

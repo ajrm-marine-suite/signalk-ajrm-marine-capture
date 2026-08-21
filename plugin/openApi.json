@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AJRM Marine Voyages",
-    "version": "0.10.15",
+    "version": "0.10.16",
     "description": "Canonical voyage recording, replay, review, observation and bundle API. Signal K authentication is required; state-changing routes require administrative access."
   },
   "paths": {

@@ -14,7 +14,6 @@ const RECOMPUTED_OUTPUT_CONTRACT = "ajrm-marine-recomputed-output-v1";
 const RECORDED_OUTPUT_PLAYBACK_CONTRACT =
   "ajrm-marine-recorded-output-playback-v1";
 const INPUT_RELATIVE_PATH = "input/sensor-input.jsonl";
-const LEGACY_INPUT_RELATIVE_PATH = "input/yden-input.jsonl";
 const RECOMPUTED_OUTPUT_RELATIVE_PATH = "recomputed/output.jsonl";
 const RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH = "recomputed/output.jsonl.gz";
 const PHYSICAL_SOURCE_TYPES = new Set(["NMEA2000", "NMEA0183", "GPSD"]);
@@ -570,7 +569,6 @@ function round4(value) {
 module.exports = {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
-  LEGACY_INPUT_RELATIVE_PATH,
   PHYSICAL_SOURCE_TYPES,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,

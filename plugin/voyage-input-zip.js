@@ -12,15 +12,11 @@ const yauzl = require("yauzl");
 
 const {
   INPUT_RELATIVE_PATH,
-  LEGACY_INPUT_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
 } = require("./canonical-voyage");
 
-const INPUT_ENTRY_CANDIDATES = new Set([
-  INPUT_RELATIVE_PATH,
-  LEGACY_INPUT_RELATIVE_PATH,
-]);
+const INPUT_ENTRY_CANDIDATES = new Set([INPUT_RELATIVE_PATH]);
 
 function extractCanonicalInputFromZip(zipPath, targetPath, options = {}) {
   return extractVoyageEntryFromZip(zipPath, targetPath, {

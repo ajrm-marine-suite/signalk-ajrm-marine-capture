@@ -21,7 +21,6 @@ const createVoyageReview = require("./voyage-review");
 const {
   INPUT_CONTRACT,
   INPUT_RELATIVE_PATH,
-  LEGACY_INPUT_RELATIVE_PATH,
   PHYSICAL_SOURCE_TYPES,
   RECOMPUTED_OUTPUT_GZIP_RELATIVE_PATH,
   RECOMPUTED_OUTPUT_RELATIVE_PATH,
@@ -2784,12 +2783,8 @@ module.exports = function ajrmMarineCapture(app) {
 
   async function findCanonicalInputRelativePath(directory, existingState) {
     const candidates = [
-      existingState?.fileName === INPUT_RELATIVE_PATH ||
-      existingState?.fileName === LEGACY_INPUT_RELATIVE_PATH
-        ? existingState.fileName
-        : null,
+      existingState?.fileName === INPUT_RELATIVE_PATH ? existingState.fileName : null,
       INPUT_RELATIVE_PATH,
-      LEGACY_INPUT_RELATIVE_PATH,
     ].filter((entry, index, values) =>
       typeof entry === "string" && entry && values.indexOf(entry) === index,
     );
