@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.17
+
+- Update `adm-zip` to 0.6.1 to remove the affected dependency range for
+  GHSA-vwc7-r8mq-g2x9. Capture's existing bounded in-memory entry reads and
+  `yauzl` streaming extraction remain unchanged.
+
 ## 0.10.16
 
 - Makes `input/sensor-input.jsonl` the sole replayable voyage-input model;
